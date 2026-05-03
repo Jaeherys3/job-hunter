@@ -1,0 +1,21 @@
+# Dane lokalne - nie commituj
+data/
+*.db
+
+# Zmienne środowiskowe - NIGDY nie commituj
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/settings.json
+
+# Logi
+*.log
+run_job_hunter.bat
