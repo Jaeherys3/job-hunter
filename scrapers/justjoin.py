@@ -1,8 +1,9 @@
 import time
 import hashlib
+import re
 from playwright.sync_api import sync_playwright
 
-KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark"]
+KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure", "spark", "python", "etl"]
 
 def fetch_justjoin() -> list:
     all_jobs = {}
@@ -18,20 +19,41 @@ def fetch_justjoin() -> list:
             page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=45000, wait_until="networkidle")
             time.sleep(4)
 
-            # Zbierz dane z kart ofert przez JavaScript
             offers = page.evaluate("""
                 () => {
                     const results = [];
                     const cards = document.querySelectorAll('a[href*="/job-offer/"]');
                     cards.forEach(card => {
-                        const url = card.href;
-                        // Tytuł jest w alt obrazka logo firmy
-                        const img = card.querySelector('img[id="offerCardCompanyLogo"]');
-                        const title = img ? img.alt : '';
-                        // Firma - szukaj w tekstach
-                        const allText = card.innerText || '';
-                        const lines = allText.split('\\n').map(s => s.trim()).filter(s => s.length > 0);
-                        results.push({ url, title, lines });
+                        const url = card.href || '';
+
+                        // innerText struktura (z diagnostyki):
+                        // opcjonalnie: "Super offer"
+                        // tytuł
+                        // wynagrodzenie lub "Undisclosed Salary"
+                        // firma
+                        // miasto
+                        // opcjonalnie: ", +N Locations", "Remote", "Nd left"
+                        // tagi technologii
+                        const lines = (card.innerText || '')
+                            .split('\\n')
+                            .map(l => l.trim())
+                            .filter(l => l.length > 0);
+
+                        // Pomiń "Super offer" jeśli jest
+                        let idx = 0;
+                        if (lines[0] === 'Super offer') idx = 1;
+
+                        const title = lines[idx] || '';
+                        const salary = lines[idx + 1] || '';
+                        const company = lines[idx + 2] || '';
+                        const city = lines[idx + 3] || '';
+
+                        // Tagi: wszystko po mieście, pomijając "Locations", "Remote", daty
+                        const skipWords = ['Remote', 'Locations', 'left', 'New'];
+                        const tags = lines.slice(idx + 4)
+                            .filter(l => !skipWords.some(w => l.includes(w)) && !/^\\d/.test(l) && !/^,/.test(l));
+
+                        results.push({ url, title, salary, company, city, tags });
                     });
                     return results;
                 }
@@ -60,26 +82,19 @@ def _matches_keywords(job: dict) -> bool:
 def _parse_offer(offer: dict) -> dict:
     url = offer.get("url", "")
     title = offer.get("title", "")
-    lines = offer.get("lines", [])
+    tags = offer.get("tags", [])
+    salary = offer.get("salary", "")
+    if salary == "Undisclosed Salary":
+        salary = ""
 
-    # Linie z karty: zwykle [firma, lokalizacja, technologie..., wynagrodzenie]
-    company = lines[0] if len(lines) > 0 else ""
-    location = lines[1] if len(lines) > 1 else ""
-    salary = ""
-    # Szukaj wynagrodzenia (zawiera cyfry i PLN/USD)
-    for line in lines:
-        if any(c in line for c in ["PLN", "USD", "EUR", "zł"]) and any(c.isdigit() for c in line):
-            salary = line
-            break
-
-    description = " ".join(lines)
+    description = f"{title} {' '.join(tags)}"
     job_id = hashlib.md5(url.encode()).hexdigest()[:12]
 
     return {
         "id": f"jj_{job_id}",
         "title": title,
-        "company": company,
-        "location": location,
+        "company": offer.get("company", ""),
+        "location": offer.get("city", ""),
         "salary": salary,
         "url": url,
         "source": "JustJoin.it",

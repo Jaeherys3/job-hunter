@@ -1,8 +1,9 @@
 import time
 import hashlib
+import re
 from playwright.sync_api import sync_playwright
 
-KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data"]
+KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data", "azure", "python", "spark"]
 
 def fetch_pracuj() -> list:
     all_jobs = {}
@@ -23,40 +24,52 @@ def fetch_pracuj() -> list:
                     const results = [];
                     const cards = document.querySelectorAll('.posting-list-item');
                     cards.forEach(card => {
-                        // URL
-                        const link = card.querySelector('a[href*="/job/"]');
-                        const url = link ? 'https://nofluffjobs.com' + link.getAttribute('href') : '';
+                        // URL - szukaj w atrybucie routerLink lub data-id
+                        const linkEl = card.querySelector('a[href*="/job/"], [routerlink*="/job/"]');
+                        let url = '';
+                        if (linkEl) {
+                            url = linkEl.href || ('https://nofluffjobs.com' + linkEl.getAttribute('routerlink'));
+                        }
 
-                        // Tytuł
-                        const titleEl = card.querySelector('[data-cy="posting-item-title"], h3, .posting-title__position');
-                        const title = titleEl ? titleEl.innerText.trim() : '';
+                        // Parsuj innerText - struktura:
+                        // linia 0: tytuł
+                        // linia 1: "Zapisz ofertę" (pomijamy)
+                        // linia 2: wynagrodzenie (zawiera PLN/USD)
+                        // linie środkowe: technologie/tagi
+                        // przedostatnia: firma (poprzedzona spacją)
+                        // ostatnia: miasto
+                        const lines = (card.innerText || '')
+                            .split('\\n')
+                            .map(l => l.trim())
+                            .filter(l => l.length > 0 && l !== 'Zapisz ofertę' && l !== 'NOWA');
 
-                        // Firma
-                        const companyEl = card.querySelector('[data-cy="posting-item-company-name"], .posting-title__company');
-                        const company = companyEl ? companyEl.innerText.trim() : '';
+                        const title = lines[0] || '';
+                        const salary = lines.find(l => /\\d/.test(l) && /(PLN|USD|EUR|zł)/.test(l)) || '';
+                        const city = lines[lines.length - 1] || '';
+                        const company = lines[lines.length - 2] || '';
+                        // Tagi: wszystko między wynagrodzeniem a firmą
+                        const salIdx = lines.indexOf(salary);
+                        const compIdx = lines.length - 2;
+                        const tags = lines.slice(salIdx + 1, compIdx).filter(l => l.length > 0);
 
-                        // Lokalizacja
-                        const locEl = card.querySelector('[data-cy="posting-item-city"], .posting-info__location');
-                        const location = locEl ? locEl.innerText.trim() : '';
-
-                        // Wynagrodzenie
-                        const salEl = card.querySelector('[data-cy="posting-item-salary"], .salary');
-                        const salary = salEl ? salEl.innerText.trim() : '';
-
-                        // Technologie (tagi)
-                        const tags = Array.from(card.querySelectorAll('.posting-tag, [class*="tag"], [class*="technology"]'))
-                            .map(t => t.innerText.trim())
-                            .filter(t => t.length > 0);
-
-                        if (title) results.push({ url, title, company, location, salary, tags });
+                        results.push({ url, title, salary, company, city, tags });
                     });
                     return results;
                 }
             """)
 
-            for offer in offers:
+            # Zbierz URLe z linków jeśli brakuje (Angular routerLink)
+            hrefs = page.evaluate("""
+                () => Array.from(document.querySelectorAll('a[href*="nofluffjobs.com/pl/job/"], a[href*="/pl/job/"]'))
+                    .map(a => a.href)
+            """)
+
+            for i, offer in enumerate(offers):
                 if not offer.get("title"):
                     continue
+                # Uzupełnij URL z zebranej listy href jeśli brak
+                if not offer.get("url") and i < len(hrefs):
+                    offer["url"] = hrefs[i]
                 job = _parse_offer(offer)
                 if job and _matches_keywords(job):
                     all_jobs[job["id"]] = job
@@ -79,15 +92,16 @@ def _parse_offer(offer: dict) -> dict:
     title = offer.get("title", "")
     tags = offer.get("tags", [])
     description = f"{title} {' '.join(tags)}"
-    job_id = hashlib.md5(url.encode()).hexdigest()[:12] if url else hashlib.md5(title.encode()).hexdigest()[:12]
+    uid = url if url else title
+    job_id = hashlib.md5(uid.encode()).hexdigest()[:12]
 
     return {
         "id": f"nfj_{job_id}",
         "title": title,
-        "company": offer.get("company", ""),
-        "location": offer.get("location", ""),
+        "company": offer.get("company", "").lstrip(),
+        "location": offer.get("city", ""),
         "salary": offer.get("salary", ""),
-        "url": url,
+        "url": url or "https://nofluffjobs.com/pl/data-engineering",
         "source": "NoFluffJobs",
         "description": description,
     }
