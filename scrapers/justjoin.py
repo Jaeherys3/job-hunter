@@ -1,10 +1,12 @@
 import time
+import json
+import re
 from playwright.sync_api import sync_playwright
 
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark"]
 
 def fetch_justjoin() -> list:
-    """Pobiera oferty z JustJoin.it — wywołuje API z kontekstu przeglądarki."""
+    """Pobiera oferty z JustJoin — przechwytuje requesty sieciowe podczas ładowania strony."""
     all_jobs = {}
 
     try:
@@ -16,34 +18,57 @@ def fetch_justjoin() -> list:
             )
             page = context.new_page()
 
-            # Odwiedź stronę żeby dostać ciasteczka
-            page.goto("https://justjoin.it", timeout=45000, wait_until="domcontentloaded")
-            time.sleep(2)
+            captured_responses = []
 
-            # Wywołaj API z kontekstu przeglądarki
-            result = page.evaluate("""
-                async () => {
-                    const response = await fetch('https://api.justjoin.it/v1/offers', {
-                        headers: {
-                            'Accept': 'application/json',
-                            'Referer': 'https://justjoin.it/',
-                        }
-                    });
-                    if (!response.ok) return null;
-                    return await response.json();
-                }
-            """)
+            # Przechwytuj WSZYSTKIE odpowiedzi JSON z justjoin API
+            def on_response(response):
+                url = response.url
+                if "justjoin.it" in url and response.status == 200:
+                    content_type = response.headers.get("content-type", "")
+                    if "json" in content_type:
+                        try:
+                            data = response.json()
+                            captured_responses.append({"url": url, "data": data})
+                        except:
+                            pass
+
+            page.on("response", on_response)
+
+            # Załaduj stronę z ofertami data
+            page.goto(
+                "https://justjoin.it/job-offers/all-locations/data",
+                timeout=45000,
+                wait_until="networkidle"
+            )
+            time.sleep(4)
 
             browser.close()
 
-            if not result or not isinstance(result, list):
-                print("[JustJoin] Brak odpowiedzi z API")
-                return []
+            # Szukaj ofert w przechwyconych odpowiedziach
+            for item in captured_responses:
+                data = item["data"]
+                offers = None
 
-            for offer in result:
-                job = _parse_offer(offer)
-                if job and _matches_keywords(job):
-                    all_jobs[job["id"]] = job
+                if isinstance(data, list):
+                    offers = data
+                elif isinstance(data, dict):
+                    # Różne struktury odpowiedzi
+                    for key in ["data", "offers", "postings", "items", "results", "jobs"]:
+                        if key in data and isinstance(data[key], list):
+                            offers = data[key]
+                            break
+
+                if offers:
+                    for offer in offers:
+                        if isinstance(offer, dict) and offer.get("title"):
+                            job = _parse_offer(offer)
+                            if job and _matches_keywords(job):
+                                all_jobs[job["id"]] = job
+
+            if not all_jobs:
+                print(f"[JustJoin] Nie znaleziono ofert. Przechwycono {len(captured_responses)} odpowiedzi JSON.")
+                for item in captured_responses[:5]:
+                    print(f"  URL: {item['url'][:80]}")
 
     except Exception as e:
         print(f"[JustJoin] Błąd: {e}")
@@ -61,33 +86,42 @@ def _parse_offer(offer: dict) -> dict:
         return None
 
     salary = ""
-    employment_types = offer.get("employment_types", [])
-    if employment_types:
-        sal = employment_types[0].get("salary")
-        if sal and isinstance(sal, dict):
-            frm = sal.get("from", "")
-            to = sal.get("to", "")
-            currency = sal.get("currency", "PLN")
-            if frm and to:
-                salary = f"{frm} - {to} {currency}"
+    for key in ["employment_types", "employmentTypes"]:
+        employment_types = offer.get(key, [])
+        if employment_types:
+            sal = employment_types[0].get("salary")
+            if sal and isinstance(sal, dict):
+                frm = sal.get("from", "")
+                to = sal.get("to", "")
+                currency = sal.get("currency", "PLN")
+                if frm and to:
+                    salary = f"{frm} - {to} {currency}"
+            break
 
-    remote = offer.get("remote", False)
-    city = offer.get("city", "")
+    remote = offer.get("remote", False) or offer.get("workplaceType") == "remote"
+    city = offer.get("city", "") or offer.get("cityName", "")
     location = "Remote" if remote else city
 
-    skills = offer.get("skills", [])
-    skill_names = [s.get("name", "") for s in skills if s.get("name")]
-    description = " ".join(skill_names)
+    skills = offer.get("skills", []) or offer.get("requiredSkills", []) or []
+    skill_names = []
+    for s in skills:
+        if isinstance(s, dict):
+            skill_names.append(s.get("name", "") or s.get("value", ""))
+        elif isinstance(s, str):
+            skill_names.append(s)
 
-    job_id = offer.get("id", "")
+    description = " ".join(filter(None, skill_names))
+
+    job_id = offer.get("id") or offer.get("slug", "")
+    slug = offer.get("slug") or job_id
 
     return {
         "id": f"jj_{job_id}",
         "title": offer.get("title", ""),
-        "company": offer.get("company_name", ""),
+        "company": offer.get("company_name", "") or offer.get("companyName", "") or offer.get("company", {}).get("name", ""),
         "location": location,
         "salary": salary,
-        "url": f"https://justjoin.it/offers/{job_id}",
+        "url": f"https://justjoin.it/job-offer/{slug}",
         "source": "JustJoin.it",
         "description": description,
     }

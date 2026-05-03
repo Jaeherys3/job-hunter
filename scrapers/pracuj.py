@@ -3,10 +3,8 @@ from playwright.sync_api import sync_playwright
 
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data"]
 
-NFJ_API = "https://nofluffjobs.com/api/search/posting"
-
 def fetch_pracuj() -> list:
-    """Pobiera oferty z NoFluffJobs — wywołuje API bezpośrednio z kontekstu przeglądarki."""
+    """Pobiera oferty z NoFluffJobs."""
     all_jobs = {}
 
     try:
@@ -18,38 +16,50 @@ def fetch_pracuj() -> list:
             )
             page = context.new_page()
 
-            # Najpierw odwiedź stronę żeby dostać ciasteczka/nagłówki
             page.goto("https://nofluffjobs.com/pl", timeout=45000, wait_until="domcontentloaded")
             time.sleep(2)
 
-            # Wywołaj API bezpośrednio z kontekstu przeglądarki (omija blokady CORS)
+            # Dodajemy wymagany parametr salaryCurrency
             result = page.evaluate("""
                 async () => {
-                    const response = await fetch('https://nofluffjobs.com/api/search/posting', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            rawSearch: '',
-                            category: 'data-engineering',
-                            page: 1,
-                            pageSize: 100,
-                        })
-                    });
-                    if (!response.ok) return null;
-                    return await response.json();
+                    try {
+                        const r = await fetch('https://nofluffjobs.com/api/search/posting', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                rawSearch: '',
+                                category: 'data-engineering',
+                                salaryCurrency: 'PLN',
+                                salaryPeriod: 'month',
+                                page: 1,
+                                pageSize: 100,
+                            })
+                        });
+                        const text = await r.text();
+                        return { status: r.status, text: text };
+                    } catch(e) {
+                        return { error: e.toString() };
+                    }
                 }
             """)
 
             browser.close()
 
-            if not result:
-                print("[NoFluffJobs] Brak odpowiedzi z API")
+            if not result or result.get("error"):
+                print(f"[NoFluffJobs] Błąd: {result.get('error', 'brak odpowiedzi')}")
                 return []
 
-            postings = result.get("postings", [])
+            if result.get("status") != 200:
+                print(f"[NoFluffJobs] HTTP {result.get('status')}: {result.get('text', '')[:200]}")
+                return []
+
+            import json
+            data = json.loads(result["text"])
+            postings = data.get("postings", [])
+
             for posting in postings:
                 job = _parse_posting(posting)
                 if job and _matches_keywords(job):

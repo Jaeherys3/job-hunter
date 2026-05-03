@@ -1,8 +1,8 @@
 """
 Skrypt diagnostyczny - uruchom: python debug_scrapers.py
-Pokaże co dokładnie zwracają API portali.
 """
 import time
+import json
 from playwright.sync_api import sync_playwright
 
 def debug():
@@ -14,83 +14,71 @@ def debug():
         )
         page = context.new_page()
 
-        # === TEST 1: JustJoin API v1 ===
+        # === TEST NoFluffJobs z poprawnym parametrem ===
         print("=" * 50)
-        print("TEST 1: JustJoin API v1")
-        page.goto("https://justjoin.it", timeout=45000, wait_until="domcontentloaded")
+        print("TEST: NoFluffJobs API z salaryCurrency")
+        page.goto("https://nofluffjobs.com/pl", timeout=45000, wait_until="domcontentloaded")
         time.sleep(2)
 
         result = page.evaluate("""
             async () => {
                 try {
-                    const r = await fetch('https://api.justjoin.it/v1/offers', {
-                        headers: { 'Accept': 'application/json', 'Referer': 'https://justjoin.it/' }
-                    });
-                    return { status: r.status, ok: r.ok, text: await r.text() };
-                } catch(e) {
-                    return { error: e.toString() };
-                }
-            }
-        """)
-        print(f"Status: {result.get('status')} | OK: {result.get('ok')}")
-        print(f"Odpowiedź (pierwsze 300 znaków): {str(result.get('text', result.get('error', '')))[:300]}")
-
-        # === TEST 2: JustJoin nowe API ===
-        print("\n" + "=" * 50)
-        print("TEST 2: JustJoin nowe API /v2")
-        result2 = page.evaluate("""
-            async () => {
-                try {
-                    const r = await fetch('https://api.justjoin.it/v2/user-panel/offers?page=1&perPage=10&sortBy=newest', {
-                        headers: { 'Accept': 'application/json', 'Referer': 'https://justjoin.it/' }
-                    });
-                    return { status: r.status, ok: r.ok, text: await r.text() };
-                } catch(e) {
-                    return { error: e.toString() };
-                }
-            }
-        """)
-        print(f"Status: {result2.get('status')} | OK: {result2.get('ok')}")
-        print(f"Odpowiedź: {str(result2.get('text', result2.get('error', '')))[:300]}")
-
-        # === TEST 3: NoFluffJobs POST ===
-        print("\n" + "=" * 50)
-        print("TEST 3: NoFluffJobs API")
-        page.goto("https://nofluffjobs.com/pl", timeout=45000, wait_until="domcontentloaded")
-        time.sleep(2)
-
-        result3 = page.evaluate("""
-            async () => {
-                try {
                     const r = await fetch('https://nofluffjobs.com/api/search/posting', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                        body: JSON.stringify({ rawSearch: 'databricks', page: 1, pageSize: 5 })
+                        body: JSON.stringify({
+                            rawSearch: 'databricks',
+                            salaryCurrency: 'PLN',
+                            salaryPeriod: 'month',
+                            page: 1,
+                            pageSize: 3,
+                        })
                     });
-                    return { status: r.status, ok: r.ok, text: await r.text() };
-                } catch(e) {
-                    return { error: e.toString() };
-                }
+                    const text = await r.text();
+                    return { status: r.status, text: text };
+                } catch(e) { return { error: e.toString() }; }
             }
         """)
-        print(f"Status: {result3.get('status')} | OK: {result3.get('ok')}")
-        print(f"Odpowiedź: {str(result3.get('text', result3.get('error', '')))[:300]}")
+        print(f"Status: {result.get('status')}")
+        if result.get('status') == 200:
+            data = json.loads(result['text'])
+            postings = data.get('postings', [])
+            print(f"Ofert: {len(postings)}")
+            if postings:
+                p0 = postings[0]
+                print(f"Przykład: {p0.get('title')} @ {p0.get('name')}")
+                print(f"Klucze: {list(p0.keys())}")
+        else:
+            print(f"Odpowiedź: {result.get('text', '')[:300]}")
 
-        # === TEST 4: Przechwytywanie requestów na JustJoin ===
+        # === TEST JustJoin - przechwytywanie ===
         print("\n" + "=" * 50)
-        print("TEST 4: Nasłuchiwanie requestów na justjoin.it/job-offers")
-        captured_urls = []
+        print("TEST: JustJoin - przechwytywanie JSON responses")
+        captured = []
 
-        def on_request(request):
-            if 'justjoin' in request.url and 'api' in request.url:
-                captured_urls.append(request.url)
+        def on_response(response):
+            if "justjoin.it" in response.url and response.status == 200:
+                ct = response.headers.get("content-type", "")
+                if "json" in ct:
+                    try:
+                        data = response.json()
+                        captured.append({"url": response.url, "data": data})
+                    except:
+                        pass
 
-        page.on("request", on_request)
+        page.on("response", on_response)
         page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=45000, wait_until="networkidle")
-        time.sleep(3)
-        print(f"Przechwycone API URLs ({len(captured_urls)}):")
-        for url in captured_urls[:10]:
-            print(f"  {url}")
+        time.sleep(4)
+
+        print(f"Przechwycono {len(captured)} odpowiedzi JSON:")
+        for item in captured:
+            data = item['data']
+            size = len(data) if isinstance(data, list) else "dict"
+            print(f"  [{size}] {item['url'][:80]}")
+            if isinstance(data, list) and data:
+                print(f"    Przykład klucze: {list(data[0].keys())[:8]}")
+            elif isinstance(data, dict):
+                print(f"    Klucze: {list(data.keys())[:8]}")
 
         browser.close()
 
