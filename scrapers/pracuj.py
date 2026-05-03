@@ -1,10 +1,10 @@
 import time
+import hashlib
 from playwright.sync_api import sync_playwright
 
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data"]
 
 def fetch_pracuj() -> list:
-    """Pobiera oferty z NoFluffJobs."""
     all_jobs = {}
 
     try:
@@ -15,55 +15,53 @@ def fetch_pracuj() -> list:
                 locale="pl-PL",
             )
             page = context.new_page()
+            page.goto("https://nofluffjobs.com/pl/data-engineering", timeout=45000, wait_until="networkidle")
+            time.sleep(3)
 
-            page.goto("https://nofluffjobs.com/pl", timeout=45000, wait_until="domcontentloaded")
-            time.sleep(2)
+            offers = page.evaluate("""
+                () => {
+                    const results = [];
+                    const cards = document.querySelectorAll('.posting-list-item');
+                    cards.forEach(card => {
+                        // URL
+                        const link = card.querySelector('a[href*="/job/"]');
+                        const url = link ? 'https://nofluffjobs.com' + link.getAttribute('href') : '';
 
-            # Dodajemy wymagany parametr salaryCurrency
-            result = page.evaluate("""
-                async () => {
-                    try {
-                        const r = await fetch('https://nofluffjobs.com/api/search/posting', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json',
-                            },
-                            body: JSON.stringify({
-                                rawSearch: '',
-                                category: 'data-engineering',
-                                salaryCurrency: 'PLN',
-                                salaryPeriod: 'month',
-                                page: 1,
-                                pageSize: 100,
-                            })
-                        });
-                        const text = await r.text();
-                        return { status: r.status, text: text };
-                    } catch(e) {
-                        return { error: e.toString() };
-                    }
+                        // Tytuł
+                        const titleEl = card.querySelector('[data-cy="posting-item-title"], h3, .posting-title__position');
+                        const title = titleEl ? titleEl.innerText.trim() : '';
+
+                        // Firma
+                        const companyEl = card.querySelector('[data-cy="posting-item-company-name"], .posting-title__company');
+                        const company = companyEl ? companyEl.innerText.trim() : '';
+
+                        // Lokalizacja
+                        const locEl = card.querySelector('[data-cy="posting-item-city"], .posting-info__location');
+                        const location = locEl ? locEl.innerText.trim() : '';
+
+                        // Wynagrodzenie
+                        const salEl = card.querySelector('[data-cy="posting-item-salary"], .salary');
+                        const salary = salEl ? salEl.innerText.trim() : '';
+
+                        // Technologie (tagi)
+                        const tags = Array.from(card.querySelectorAll('.posting-tag, [class*="tag"], [class*="technology"]'))
+                            .map(t => t.innerText.trim())
+                            .filter(t => t.length > 0);
+
+                        if (title) results.push({ url, title, company, location, salary, tags });
+                    });
+                    return results;
                 }
             """)
 
-            browser.close()
-
-            if not result or result.get("error"):
-                print(f"[NoFluffJobs] Błąd: {result.get('error', 'brak odpowiedzi')}")
-                return []
-
-            if result.get("status") != 200:
-                print(f"[NoFluffJobs] HTTP {result.get('status')}: {result.get('text', '')[:200]}")
-                return []
-
-            import json
-            data = json.loads(result["text"])
-            postings = data.get("postings", [])
-
-            for posting in postings:
-                job = _parse_posting(posting)
+            for offer in offers:
+                if not offer.get("title"):
+                    continue
+                job = _parse_offer(offer)
                 if job and _matches_keywords(job):
                     all_jobs[job["id"]] = job
+
+            browser.close()
 
     except Exception as e:
         print(f"[NoFluffJobs] Błąd: {e}")
@@ -76,47 +74,20 @@ def _matches_keywords(job: dict) -> bool:
     text = f"{job['title']} {job['description']}".lower()
     return any(kw.lower() in text for kw in KEYWORDS)
 
-def _parse_posting(posting: dict) -> dict:
-    if not posting:
-        return None
-
-    salary = ""
-    sal = posting.get("salary")
-    if sal:
-        frm = sal.get("from", "")
-        to = sal.get("to", "")
-        currency = sal.get("currency", "PLN")
-        if frm and to:
-            salary = f"{frm} - {to} {currency}"
-
-    location_data = posting.get("location", {})
-    remote = location_data.get("fullyRemote", False)
-    places = location_data.get("places", [])
-    if remote:
-        location = "Remote"
-    elif places:
-        city = places[0].get("city", {})
-        location = city.get("name", "Polska") if isinstance(city, dict) else str(city)
-    else:
-        location = "Polska"
-
-    skills = posting.get("technology", []) or []
-    skill_names = [str(s) for s in skills if s]
-    title = posting.get("title", "")
-    category = posting.get("category", "")
-    seniority = " ".join(posting.get("seniority", []) or [])
-    description = " ".join(filter(None, [title, category, seniority] + skill_names))
-
-    post_id = posting.get("id") or posting.get("slug", "")
-    post_url = posting.get("url", post_id)
+def _parse_offer(offer: dict) -> dict:
+    url = offer.get("url", "")
+    title = offer.get("title", "")
+    tags = offer.get("tags", [])
+    description = f"{title} {' '.join(tags)}"
+    job_id = hashlib.md5(url.encode()).hexdigest()[:12] if url else hashlib.md5(title.encode()).hexdigest()[:12]
 
     return {
-        "id": f"nfj_{post_id}",
+        "id": f"nfj_{job_id}",
         "title": title,
-        "company": posting.get("name", ""),
-        "location": location,
-        "salary": salary,
-        "url": f"https://nofluffjobs.com/pl/job/{post_url}",
+        "company": offer.get("company", ""),
+        "location": offer.get("location", ""),
+        "salary": offer.get("salary", ""),
+        "url": url,
         "source": "NoFluffJobs",
         "description": description,
     }
