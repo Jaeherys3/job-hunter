@@ -1,11 +1,12 @@
-import json
 import time
 from playwright.sync_api import sync_playwright
 
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark"]
 
 def fetch_justjoin() -> list:
-    """Pobiera oferty z JustJoin.it przez przeglądarkę (Playwright)."""
+    """Pobiera oferty z JustJoin.it — wywołuje API z kontekstu przeglądarki."""
+    all_jobs = {}
+
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -15,43 +16,50 @@ def fetch_justjoin() -> list:
             )
             page = context.new_page()
 
-            # Przechwytuj odpowiedzi API
-            captured = []
+            # Odwiedź stronę żeby dostać ciasteczka
+            page.goto("https://justjoin.it", timeout=45000, wait_until="domcontentloaded")
+            time.sleep(2)
 
-            def handle_response(response):
-                if "api.justjoin.it/v1/offers" in response.url and response.status == 200:
-                    try:
-                        data = response.json()
-                        if isinstance(data, list):
-                            captured.extend(data)
-                    except:
-                        pass
-
-            page.on("response", handle_response)
-
-            page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=30000, wait_until="networkidle")
-            time.sleep(3)
+            # Wywołaj API z kontekstu przeglądarki
+            result = page.evaluate("""
+                async () => {
+                    const response = await fetch('https://api.justjoin.it/v1/offers', {
+                        headers: {
+                            'Accept': 'application/json',
+                            'Referer': 'https://justjoin.it/',
+                        }
+                    });
+                    if (!response.ok) return null;
+                    return await response.json();
+                }
+            """)
 
             browser.close()
 
-            if not captured:
-                print("[JustJoin] Brak danych z API — spróbuj uruchomić ponownie")
+            if not result or not isinstance(result, list):
+                print("[JustJoin] Brak odpowiedzi z API")
                 return []
 
-            parsed = [_parse_offer(o) for o in captured]
-            filtered = [j for j in parsed if _matches_keywords(j)]
-            print(f"[JustJoin] Pobrano {len(captured)} ofert, po filtrze: {len(filtered)}")
-            return filtered
+            for offer in result:
+                job = _parse_offer(offer)
+                if job and _matches_keywords(job):
+                    all_jobs[job["id"]] = job
 
     except Exception as e:
         print(f"[JustJoin] Błąd: {e}")
-        return []
+
+    result_list = list(all_jobs.values())
+    print(f"[JustJoin] Pobrano {len(result_list)} unikalnych ofert")
+    return result_list
 
 def _matches_keywords(job: dict) -> bool:
     text = f"{job['title']} {job['description']}".lower()
     return any(kw.lower() in text for kw in KEYWORDS)
 
 def _parse_offer(offer: dict) -> dict:
+    if not offer:
+        return None
+
     salary = ""
     employment_types = offer.get("employment_types", [])
     if employment_types:

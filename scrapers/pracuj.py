@@ -1,13 +1,13 @@
 import time
 from playwright.sync_api import sync_playwright
 
-# Jedno zapytanie — NoFluffJobs zwraca wszystkie oferty z Data kategorii
-# Filtrowanie robimy lokalnie żeby uniknąć duplikatów z wielu zapytań
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data"]
 
+NFJ_API = "https://nofluffjobs.com/api/search/posting"
+
 def fetch_pracuj() -> list:
-    """Pobiera oferty z NoFluffJobs przez przeglądarkę (Playwright)."""
-    all_jobs = {}  # słownik id -> job, automatycznie deduplikuje
+    """Pobiera oferty z NoFluffJobs — wywołuje API bezpośrednio z kontekstu przeglądarki."""
+    all_jobs = {}
 
     try:
         with sync_playwright() as p:
@@ -18,34 +18,49 @@ def fetch_pracuj() -> list:
             )
             page = context.new_page()
 
-            def handle_response(response):
-                if "nofluffjobs.com/api/search/posting" in response.url and response.status == 200:
-                    try:
-                        data = response.json()
-                        for posting in data.get("postings", []):
-                            job = _parse_posting(posting)
-                            if job and _matches_keywords(job):
-                                all_jobs[job["id"]] = job  # deduplikacja przez słownik
-                    except:
-                        pass
+            # Najpierw odwiedź stronę żeby dostać ciasteczka/nagłówki
+            page.goto("https://nofluffjobs.com/pl", timeout=45000, wait_until="domcontentloaded")
+            time.sleep(2)
 
-            page.on("response", handle_response)
+            # Wywołaj API bezpośrednio z kontekstu przeglądarki (omija blokady CORS)
+            result = page.evaluate("""
+                async () => {
+                    const response = await fetch('https://nofluffjobs.com/api/search/posting', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            rawSearch: '',
+                            category: 'data-engineering',
+                            page: 1,
+                            pageSize: 100,
+                        })
+                    });
+                    if (!response.ok) return null;
+                    return await response.json();
+                }
+            """)
 
-            # Jedno szerokie zapytanie po kategorii Data — brak duplikatów
-            page.goto(
-                "https://nofluffjobs.com/pl/data-engineering",
-                timeout=45000,
-                wait_until="networkidle"
-            )
-            time.sleep(3)
             browser.close()
+
+            if not result:
+                print("[NoFluffJobs] Brak odpowiedzi z API")
+                return []
+
+            postings = result.get("postings", [])
+            for posting in postings:
+                job = _parse_posting(posting)
+                if job and _matches_keywords(job):
+                    all_jobs[job["id"]] = job
 
     except Exception as e:
         print(f"[NoFluffJobs] Błąd: {e}")
 
-    result = list(all_jobs.values())
-    print(f"[NoFluffJobs] Pobrano {len(result)} unikalnych ofert")
-    return result
+    result_list = list(all_jobs.values())
+    print(f"[NoFluffJobs] Pobrano {len(result_list)} unikalnych ofert")
+    return result_list
 
 def _matches_keywords(job: dict) -> bool:
     text = f"{job['title']} {job['description']}".lower()
@@ -55,7 +70,6 @@ def _parse_posting(posting: dict) -> dict:
     if not posting:
         return None
 
-    # Wynagrodzenie
     salary = ""
     sal = posting.get("salary")
     if sal:
@@ -65,7 +79,6 @@ def _parse_posting(posting: dict) -> dict:
         if frm and to:
             salary = f"{frm} - {to} {currency}"
 
-    # Lokalizacja
     location_data = posting.get("location", {})
     remote = location_data.get("fullyRemote", False)
     places = location_data.get("places", [])
@@ -77,7 +90,6 @@ def _parse_posting(posting: dict) -> dict:
     else:
         location = "Polska"
 
-    # Opis — sklejamy tytuł + technologie + kategorię żeby scorer miał co analizować
     skills = posting.get("technology", []) or []
     skill_names = [str(s) for s in skills if s]
     title = posting.get("title", "")
