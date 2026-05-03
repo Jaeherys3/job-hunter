@@ -20,11 +20,9 @@ from notifications.whatsapp import send_digest, send_test_message
 
 MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
-MIN_SALARY  = int(os.getenv("MIN_SALARY_B2B", "26000"))
+MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
 
-# Wykluczamy TYLKO konkretne stanowiska zarządcze - nie "lead" bo to za szerokie
 EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader"]
-# "lead" tylko jako osobne słowo - wyklucza "Lead Data Engineer" ale nie "Data Platform"
 EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead"]
 
 HIGH_ENG_WORDS   = ["c1", "c2", "fluent english", "advanced english", "native english",
@@ -41,33 +39,55 @@ def _check_english(job: dict) -> str:
             return "Wymaga B2"
     return ""
 
-def _parse_salary_min(salary_str: str) -> int:
+def _parse_salary(salary_str: str) -> tuple:
+    """Zwraca (min_amount, currency). Obsługuje PLN/h, PLN/mies, USD."""
     if not salary_str:
-        return 0
-    # Usuń spacje między cyframi (format "26 000")
-    cleaned = salary_str.replace('\xa0', '').replace(' ', '')
-    numbers = re.findall(r'\d{4,6}', cleaned)
-    nums = [int(n) for n in numbers if int(n) >= 1000]
-    return min(nums) if nums else 0
+        return 0, ""
+
+    text = salary_str.upper()
+    currency = "PLN"
+    if "USD" in text:
+        currency = "USD"
+    elif "EUR" in text:
+        currency = "EUR"
+
+    # Wyciągnij wszystkie liczby (min 2 cyfry)
+    cleaned = salary_str.replace('\xa0', '').replace(' ', '').replace('\u00a0', '')
+    numbers = re.findall(r'\d+', cleaned)
+    nums = [int(n) for n in numbers if len(n) >= 2]
+
+    if not nums:
+        return 0, currency
+
+    min_val = min(nums)
+
+    # Jeśli stawka godzinowa (PLN/h) - przelicz na miesięczną (~168h/mies)
+    if "/h" in salary_str.lower() or "/godz" in salary_str.lower():
+        min_val = min_val * 168
+
+    return min_val, currency
 
 def _should_include(job: dict) -> tuple:
     title_lower = job.get("title", "").lower()
 
-    # Wyklucz stanowiska zarządcze
     for word in EXCLUDED_TITLE_WORDS:
         if word in title_lower:
-            return False, f"stanowisko zarządcze ({word})"
+            return False, f"stanowisko zarzadcze ({word})"
 
     for exact in EXCLUDED_EXACT:
         if exact in title_lower:
             return False, f"stanowisko lead ({exact})"
 
-    # Sprawdź wynagrodzenie — tylko jeśli podane i za niskie
     salary_str = job.get("salary", "")
-    if salary_str and salary_str != "Undisclosed Salary":
-        min_sal = _parse_salary_min(salary_str)
-        if 0 < min_sal < MIN_SALARY:
-            return False, f"za niskie wynagrodzenie (min {min_sal} PLN)"
+    if salary_str:
+        min_val, currency = _parse_salary(salary_str)
+        if min_val > 0:
+            # USD/EUR - przelicz orientacyjnie (nie blokuj, tylko sprawdź PLN)
+            if currency == "PLN" and min_val < MIN_SALARY_PLN:
+                return False, f"za niskie wynagrodzenie ({min_val} PLN < {MIN_SALARY_PLN})"
+            # USD poniżej ~6500/mies to też za mało (6500 USD ~ 26k PLN)
+            elif currency == "USD" and min_val < 6500:
+                return False, f"za niskie wynagrodzenie ({min_val} USD)"
 
     return True, ""
 
@@ -88,7 +108,7 @@ def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -
         include, reason = _should_include(job)
         if not include:
             if verbose:
-                print(f"   [-] {job['title'][:40]:<40} | {reason}")
+                print(f"   [-] {job['title'][:40]:<40} | {job.get('salary',''):<20} | {reason}")
             continue
 
         job["score"] = score_job(job)
@@ -125,7 +145,7 @@ def run():
     print(f"\nTop oferty ({len(top_jobs)}):")
     for job in top_jobs:
         eng = f" !! {job.get('english_level','')}" if job.get('english_level') else ""
-        print(f"   [{job['score']}%] {job['title'][:40]} – {job['company']}{eng}")
+        print(f"   [{job['score']}%] {job['title'][:40]} - {job['company']}{eng}")
 
     success = send_digest(top_jobs)
     if success:
@@ -149,7 +169,7 @@ def dry_run():
     print(f"\n--- Przyjete: {len(new_jobs)} ofert ---\n")
     for job in new_jobs[:20]:
         eng = " [!ENG]" if job.get("english_level") else ""
-        sal = f" | {job['salary']}" if job.get("salary") else " | brak widełek"
+        sal = f" | {job['salary']}" if job.get("salary") else " | brak widelek"
         print(f"  [{job['score']:3d}%] {job['title'][:40]:<40} | {job['company'][:20]:<20}{sal}{eng}")
 
 if __name__ == "__main__":

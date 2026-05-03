@@ -1,6 +1,5 @@
 import time
 import hashlib
-import re
 from playwright.sync_api import sync_playwright
 
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data", "azure", "python", "spark"]
@@ -14,30 +13,33 @@ def fetch_pracuj() -> list:
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
                 locale="pl-PL",
+                viewport={"width": 1280, "height": 900},
             )
             page = context.new_page()
             page.goto("https://nofluffjobs.com/pl/data-engineering", timeout=45000, wait_until="networkidle")
             time.sleep(3)
+
+            # Scrolluj żeby załadować wszystkie oferty
+            prev_count = 0
+            for _ in range(15):
+                page.keyboard.press("End")
+                time.sleep(1.5)
+                count = page.evaluate("() => document.querySelectorAll('.posting-list-item').length")
+                if count == prev_count:
+                    break
+                prev_count = count
+
+            print(f"[NoFluffJobs] Zaladowano {prev_count} kart po scrollowaniu")
 
             offers = page.evaluate("""
                 () => {
                     const results = [];
                     const cards = document.querySelectorAll('.posting-list-item');
                     cards.forEach(card => {
-                        // URL - szukaj w atrybucie routerLink lub data-id
-                        const linkEl = card.querySelector('a[href*="/job/"], [routerlink*="/job/"]');
+                        const linkEl = card.querySelector('a[href*="/job/"]');
                         let url = '';
-                        if (linkEl) {
-                            url = linkEl.href || ('https://nofluffjobs.com' + linkEl.getAttribute('routerlink'));
-                        }
+                        if (linkEl) url = linkEl.href || ('https://nofluffjobs.com' + (linkEl.getAttribute('href') || ''));
 
-                        // Parsuj innerText - struktura:
-                        // linia 0: tytuł
-                        // linia 1: "Zapisz ofertę" (pomijamy)
-                        // linia 2: wynagrodzenie (zawiera PLN/USD)
-                        // linie środkowe: technologie/tagi
-                        // przedostatnia: firma (poprzedzona spacją)
-                        // ostatnia: miasto
                         const lines = (card.innerText || '')
                             .split('\\n')
                             .map(l => l.trim())
@@ -47,40 +49,37 @@ def fetch_pracuj() -> list:
                         const salary = lines.find(l => /\\d/.test(l) && /(PLN|USD|EUR|zł)/.test(l)) || '';
                         const city = lines[lines.length - 1] || '';
                         const company = lines[lines.length - 2] || '';
-                        // Tagi: wszystko między wynagrodzeniem a firmą
-                        const salIdx = lines.indexOf(salary);
+                        const salIdx = salary ? lines.indexOf(salary) : 0;
                         const compIdx = lines.length - 2;
                         const tags = lines.slice(salIdx + 1, compIdx).filter(l => l.length > 0);
 
-                        results.push({ url, title, salary, company, city, tags });
+                        if (title) results.push({ url, title, salary, company, city, tags });
                     });
                     return results;
                 }
             """)
 
-            # Zbierz URLe z linków jeśli brakuje (Angular routerLink)
+            # Zbierz URLe z linków (Angular routerLink fallback)
             hrefs = page.evaluate("""
-                () => Array.from(document.querySelectorAll('a[href*="nofluffjobs.com/pl/job/"], a[href*="/pl/job/"]'))
-                    .map(a => a.href)
+                () => Array.from(document.querySelectorAll('a[href*="/pl/job/"]')).map(a => a.href)
             """)
+
+            browser.close()
 
             for i, offer in enumerate(offers):
                 if not offer.get("title"):
                     continue
-                # Uzupełnij URL z zebranej listy href jeśli brak
                 if not offer.get("url") and i < len(hrefs):
                     offer["url"] = hrefs[i]
                 job = _parse_offer(offer)
                 if job and _matches_keywords(job):
                     all_jobs[job["id"]] = job
 
-            browser.close()
-
     except Exception as e:
-        print(f"[NoFluffJobs] Błąd: {e}")
+        print(f"[NoFluffJobs] Blad: {e}")
 
     result_list = list(all_jobs.values())
-    print(f"[NoFluffJobs] Pobrano {len(result_list)} unikalnych ofert")
+    print(f"[NoFluffJobs] Pobrano {len(result_list)} pasujacych ofert")
     return result_list
 
 def _matches_keywords(job: dict) -> bool:
