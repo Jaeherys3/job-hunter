@@ -1,101 +1,104 @@
-import requests
-import hashlib
-import xml.etree.ElementTree as ET
 import time
 import re
-
-# Pracuj.pl udostępnia RSS dla wyników wyszukiwania - legalne i bez blokad
-PRACUJ_RSS_BASE = "https://www.pracuj.pl/praca.rss"
+import hashlib
+from playwright.sync_api import sync_playwright
 
 SEARCHES = [
-    "data+engineer+databricks",
-    "senior+data+engineer+azure",
-    "data+engineer+airflow+python",
+    "data engineer databricks",
+    "senior data engineer azure",
+    "data engineer airflow python",
 ]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-}
-
 def fetch_pracuj() -> list:
-    """Pobiera oferty z Pracuj.pl przez RSS."""
+    """Pobiera oferty z NoFluffJobs przez przeglądarkę (Playwright)."""
     all_jobs = []
     seen_ids = set()
 
-    for query in SEARCHES:
-        try:
-            jobs = _fetch_rss(query)
-            for job in jobs:
-                if job["id"] not in seen_ids:
-                    seen_ids.add(job["id"])
-                    all_jobs.append(job)
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"[Pracuj] Błąd dla '{query}': {e}")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                locale="pl-PL",
+            )
+            page = context.new_page()
 
-    print(f"[Pracuj] Pobrano {len(all_jobs)} ofert")
+            for query in SEARCHES:
+                try:
+                    jobs = _scrape_nofluff(page, query)
+                    for job in jobs:
+                        if job["id"] not in seen_ids:
+                            seen_ids.add(job["id"])
+                            all_jobs.append(job)
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"[NoFluffJobs] Błąd dla '{query}': {e}")
+
+            browser.close()
+
+    except Exception as e:
+        print(f"[NoFluffJobs] Błąd ogólny: {e}")
+
+    print(f"[NoFluffJobs] Pobrano {len(all_jobs)} ofert")
     return all_jobs
 
-def _fetch_rss(query: str) -> list:
-    url = f"{PRACUJ_RSS_BASE}?q={query}&cc=5016&tt=6"  # cc=5016 IT, tt=6 pełny etat
-    response = requests.get(url, headers=HEADERS, timeout=15)
-    response.raise_for_status()
+def _scrape_nofluff(page, query: str) -> list:
+    captured = []
 
-    root = ET.fromstring(response.content)
-    channel = root.find("channel")
-    if channel is None:
-        return []
+    def handle_response(response):
+        if "nofluffjobs.com/api/search/posting" in response.url and response.status == 200:
+            try:
+                data = response.json()
+                postings = data.get("postings", [])
+                captured.extend(postings)
+            except:
+                pass
 
-    jobs = []
-    for item in channel.findall("item"):
-        job = _parse_item(item)
-        if job:
-            jobs.append(job)
-    return jobs
+    page.on("response", handle_response)
 
-def _parse_item(item) -> dict:
-    title = _get_text(item, "title")
-    link = _get_text(item, "link")
-    description_html = _get_text(item, "description")
+    encoded = query.replace(" ", "%20")
+    page.goto(f"https://nofluffjobs.com/pl?criteria=requirement%3D{encoded}", timeout=30000, wait_until="networkidle")
+    time.sleep(2)
 
-    if not title or not link:
-        return None
+    page.remove_listener("response", handle_response)
+    return [_parse_posting(p) for p in captured]
 
-    # Wyciągnij tekst z HTML description
-    description = re.sub(r"<[^>]+>", " ", description_html or "")
+def _parse_posting(posting: dict) -> dict:
+    salary = ""
+    sal = posting.get("salary")
+    if sal:
+        frm = sal.get("from", "")
+        to = sal.get("to", "")
+        currency = sal.get("currency", "PLN")
+        if frm and to:
+            salary = f"{frm} - {to} {currency}"
 
-    # Wyciągnij firmę i lokalizację z tytułu RSS (format: "Stanowisko - Firma - Lokalizacja")
-    parts = title.split(" - ")
-    company = parts[1].strip() if len(parts) > 1 else ""
-    location = parts[2].strip() if len(parts) > 2 else "Polska"
-    clean_title = parts[0].strip()
+    location_data = posting.get("location", {})
+    remote = location_data.get("fullyRemote", False)
+    places = location_data.get("places", [])
 
-    # Unikalny ID z URL
-    job_id = f"pracuj_{hashlib.md5(link.encode()).hexdigest()[:10]}"
+    if remote:
+        location = "Remote"
+    elif places:
+        city = places[0].get("city", {})
+        location = city.get("name", "Polska") if isinstance(city, dict) else str(city)
+    else:
+        location = "Polska"
+
+    skills = posting.get("technology", []) or []
+    description = " ".join(str(s) for s in skills if s)
+    description += f" {posting.get('title', '')} {posting.get('category', '')}"
+
+    post_id = posting.get("id") or posting.get("slug", "")
+    post_url = posting.get("url", post_id)
 
     return {
-        "id": job_id,
-        "title": clean_title,
-        "company": company,
+        "id": f"nfj_{post_id}",
+        "title": posting.get("title", ""),
+        "company": posting.get("name", ""),
         "location": location,
-        "salary": _extract_salary(description),
-        "url": link,
-        "source": "Pracuj.pl",
+        "salary": salary,
+        "url": f"https://nofluffjobs.com/pl/job/{post_url}",
+        "source": "NoFluffJobs",
         "description": description,
     }
-
-def _get_text(element, tag: str) -> str:
-    child = element.find(tag)
-    return child.text.strip() if child is not None and child.text else ""
-
-def _extract_salary(text: str) -> str:
-    """Próbuje wyciągnąć widełki płacowe z opisu."""
-    patterns = [
-        r"(\d[\d\s]+)\s*[-–]\s*(\d[\d\s]+)\s*(PLN|zł|USD|EUR)",
-        r"(\d[\d\s]+)\s*(PLN|zł)\s*/\s*(?:mies|msc|miesiąc|mc)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(0).strip()
-    return ""

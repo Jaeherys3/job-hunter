@@ -1,84 +1,85 @@
-import requests
-import hashlib
+import json
 import time
+from playwright.sync_api import sync_playwright
 
-JUSTJOIN_API = "https://api.justjoin.it/v2/user-panel/offers"
-
-SEARCH_PARAMS = [
-    {"keyword": "data engineer databricks", "remoteOnly": "true"},
-    {"keyword": "data engineer azure airflow", "remoteOnly": "true"},
-    {"keyword": "senior data engineer python", "remoteOnly": "false", "city": "Warszawa"},
-]
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-}
+KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark"]
 
 def fetch_justjoin() -> list:
-    """Pobiera oferty z JustJoin.it przez publiczne API."""
-    all_jobs = []
-    seen_ids = set()
+    """Pobiera oferty z JustJoin.it przez przeglądarkę (Playwright)."""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                locale="pl-PL",
+            )
+            page = context.new_page()
 
-    for params in SEARCH_PARAMS:
-        try:
-            jobs = _fetch_page(params)
-            for job in jobs:
-                if job["id"] not in seen_ids:
-                    seen_ids.add(job["id"])
-                    all_jobs.append(job)
-            time.sleep(1)  # grzeczny scraper
-        except Exception as e:
-            print(f"[JustJoin] Błąd dla {params}: {e}")
+            # Przechwytuj odpowiedzi API
+            captured = []
 
-    print(f"[JustJoin] Pobrano {len(all_jobs)} ofert")
-    return all_jobs
+            def handle_response(response):
+                if "api.justjoin.it/v1/offers" in response.url and response.status == 200:
+                    try:
+                        data = response.json()
+                        if isinstance(data, list):
+                            captured.extend(data)
+                    except:
+                        pass
 
-def _fetch_page(params: dict) -> list:
-    query = {
-        "page": 1,
-        "perPage": 50,
-        "sortBy": "newest",
-        **params
-    }
+            page.on("response", handle_response)
 
-    response = requests.get(JUSTJOIN_API, params=query, headers=HEADERS, timeout=15)
-    response.raise_for_status()
-    data = response.json()
+            page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=30000, wait_until="networkidle")
+            time.sleep(3)
 
-    offers = data.get("data", data.get("offers", []))
-    return [_parse_offer(o) for o in offers if o]
+            browser.close()
+
+            if not captured:
+                print("[JustJoin] Brak danych z API — spróbuj uruchomić ponownie")
+                return []
+
+            parsed = [_parse_offer(o) for o in captured]
+            filtered = [j for j in parsed if _matches_keywords(j)]
+            print(f"[JustJoin] Pobrano {len(captured)} ofert, po filtrze: {len(filtered)}")
+            return filtered
+
+    except Exception as e:
+        print(f"[JustJoin] Błąd: {e}")
+        return []
+
+def _matches_keywords(job: dict) -> bool:
+    text = f"{job['title']} {job['description']}".lower()
+    return any(kw.lower() in text for kw in KEYWORDS)
 
 def _parse_offer(offer: dict) -> dict:
     salary = ""
-    employment_types = offer.get("employmentTypes") or offer.get("employment_types", [])
+    employment_types = offer.get("employment_types", [])
     if employment_types:
-        et = employment_types[0]
-        sal = et.get("salary") or et.get("from_pln", "")
-        if isinstance(sal, dict):
+        sal = employment_types[0].get("salary")
+        if sal and isinstance(sal, dict):
             frm = sal.get("from", "")
             to = sal.get("to", "")
             currency = sal.get("currency", "PLN")
             if frm and to:
                 salary = f"{frm} - {to} {currency}"
 
-    city = offer.get("city") or (offer.get("multilocation", [{}])[0].get("city", "") if offer.get("multilocation") else "")
-    remote = offer.get("workplaceType") == "remote" or offer.get("remote", False)
+    remote = offer.get("remote", False)
+    city = offer.get("city", "")
     location = "Remote" if remote else city
 
-    slug = offer.get("slug") or offer.get("id", "")
-    url = f"https://justjoin.it/job-offer/{slug}"
+    skills = offer.get("skills", [])
+    skill_names = [s.get("name", "") for s in skills if s.get("name")]
+    description = " ".join(skill_names)
 
-    description = offer.get("body") or offer.get("description") or ""
+    job_id = offer.get("id", "")
 
     return {
-        "id": f"jj_{offer.get('id') or offer.get('slug')}",
+        "id": f"jj_{job_id}",
         "title": offer.get("title", ""),
-        "company": offer.get("companyName") or offer.get("company_name", ""),
+        "company": offer.get("company_name", ""),
         "location": location,
         "salary": salary,
-        "url": url,
+        "url": f"https://justjoin.it/offers/{job_id}",
         "source": "JustJoin.it",
         "description": description,
     }

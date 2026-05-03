@@ -59,6 +59,7 @@ venv\Scripts\activate        # Windows
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 ### 4. Skonfiguruj CallMeBot (WhatsApp)
