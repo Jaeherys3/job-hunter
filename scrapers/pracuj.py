@@ -16,70 +16,73 @@ def fetch_pracuj() -> list:
                 viewport={"width": 1280, "height": 900},
             )
             page = context.new_page()
-            page.goto("https://nofluffjobs.com/pl/data-engineering", timeout=45000, wait_until="networkidle")
-            time.sleep(3)
 
-            # Scrolluj żeby załadować wszystkie oferty
-            prev_count = 0
-            for _ in range(15):
-                page.keyboard.press("End")
-                time.sleep(1.5)
-                count = page.evaluate("() => document.querySelectorAll('.posting-list-item').length")
-                if count == prev_count:
+            # NoFluffJobs - paginacja przez URL: /data-engineering?page=1
+            page_num = 1
+            max_pages = 10
+
+            while page_num <= max_pages:
+                url = f"https://nofluffjobs.com/pl/data-engineering?page={page_num}"
+                page.goto(url, timeout=45000, wait_until="networkidle")
+                time.sleep(3)
+
+                offers = page.evaluate("""
+                    () => {
+                        const results = [];
+                        const cards = document.querySelectorAll('.posting-list-item');
+                        cards.forEach(card => {
+                            const linkEl = card.querySelector('a[href*="/job/"]');
+                            let url = '';
+                            if (linkEl) url = linkEl.href || ('https://nofluffjobs.com' + (linkEl.getAttribute('href') || ''));
+
+                            const lines = (card.innerText || '')
+                                .split('\\n')
+                                .map(l => l.trim())
+                                .filter(l => l.length > 0 && l !== 'Zapisz ofertę' && l !== 'NOWA');
+
+                            const title = lines[0] || '';
+                            const salary = lines.find(l => /\\d/.test(l) && /(PLN|USD|EUR|zł)/.test(l)) || '';
+                            const city = lines[lines.length - 1] || '';
+                            const company = lines[lines.length - 2] || '';
+                            const salIdx = salary ? lines.indexOf(salary) : 0;
+                            const tags = lines.slice(salIdx + 1, lines.length - 2).filter(l => l.length > 0);
+
+                            if (title) results.push({ url, title, salary, company, city, tags });
+                        });
+                        return results;
+                    }
+                """)
+
+                if not offers:
                     break
-                prev_count = count
 
-            print(f"[NoFluffJobs] Zaladowano {prev_count} kart po scrollowaniu")
+                for offer in offers:
+                    if not offer.get("title"):
+                        continue
+                    job = _parse_offer(offer)
+                    if job and _matches_keywords(job):
+                        all_jobs[job["id"]] = job
 
-            offers = page.evaluate("""
-                () => {
-                    const results = [];
-                    const cards = document.querySelectorAll('.posting-list-item');
-                    cards.forEach(card => {
-                        const linkEl = card.querySelector('a[href*="/job/"]');
-                        let url = '';
-                        if (linkEl) url = linkEl.href || ('https://nofluffjobs.com' + (linkEl.getAttribute('href') || ''));
+                print(f"[NoFluffJobs] Strona {page_num}: {len(offers)} kart, lacznie: {len(all_jobs)}")
 
-                        const lines = (card.innerText || '')
-                            .split('\\n')
-                            .map(l => l.trim())
-                            .filter(l => l.length > 0 && l !== 'Zapisz ofertę' && l !== 'NOWA');
-
-                        const title = lines[0] || '';
-                        const salary = lines.find(l => /\\d/.test(l) && /(PLN|USD|EUR|zł)/.test(l)) || '';
-                        const city = lines[lines.length - 1] || '';
-                        const company = lines[lines.length - 2] || '';
-                        const salIdx = salary ? lines.indexOf(salary) : 0;
-                        const compIdx = lines.length - 2;
-                        const tags = lines.slice(salIdx + 1, compIdx).filter(l => l.length > 0);
-
-                        if (title) results.push({ url, title, salary, company, city, tags });
-                    });
-                    return results;
-                }
-            """)
-
-            # Zbierz URLe z linków (Angular routerLink fallback)
-            hrefs = page.evaluate("""
-                () => Array.from(document.querySelectorAll('a[href*="/pl/job/"]')).map(a => a.href)
-            """)
+                # Sprawdź następną stronę
+                has_next = page.evaluate("""
+                    () => {
+                        const next = document.querySelector('a[aria-label="Next"], [aria-label="next page"], .pagination-next:not(.disabled), a[data-cy="pagination-next"]');
+                        return next !== null;
+                    }
+                """)
+                if not has_next:
+                    break
+                page_num += 1
 
             browser.close()
-
-            for i, offer in enumerate(offers):
-                if not offer.get("title"):
-                    continue
-                if not offer.get("url") and i < len(hrefs):
-                    offer["url"] = hrefs[i]
-                job = _parse_offer(offer)
-                if job and _matches_keywords(job):
-                    all_jobs[job["id"]] = job
 
     except Exception as e:
         print(f"[NoFluffJobs] Blad: {e}")
 
     result_list = list(all_jobs.values())
-    print(f"[NoFluffJobs] Pobrano {len(result_list)} pasujacych ofert")
+    print(f"[NoFluffJobs] Lacznie pobrano {len(result_list)} pasujacych ofert")
     return result_list
 
 def _matches_keywords(job: dict) -> bool:

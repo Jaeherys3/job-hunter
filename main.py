@@ -40,32 +40,20 @@ def _check_english(job: dict) -> str:
     return ""
 
 def _parse_salary(salary_str: str) -> tuple:
-    """Zwraca (min_amount, currency). Obsługuje PLN/h, PLN/mies, USD."""
+    """Zwraca (min, max, currency). Obsługuje PLN/h, PLN/mies, USD."""
     if not salary_str:
-        return 0, ""
-
+        return 0, 0, ""
     text = salary_str.upper()
-    currency = "PLN"
-    if "USD" in text:
-        currency = "USD"
-    elif "EUR" in text:
-        currency = "EUR"
-
-    # Wyciągnij wszystkie liczby (min 2 cyfry)
+    currency = "USD" if "USD" in text else ("EUR" if "EUR" in text else "PLN")
     cleaned = salary_str.replace('\xa0', '').replace(' ', '').replace('\u00a0', '')
     numbers = re.findall(r'\d+', cleaned)
     nums = [int(n) for n in numbers if len(n) >= 2]
-
     if not nums:
-        return 0, currency
-
-    min_val = min(nums)
-
-    # Jeśli stawka godzinowa (PLN/h) - przelicz na miesięczną (~168h/mies)
-    if "/h" in salary_str.lower() or "/godz" in salary_str.lower():
-        min_val = min_val * 168
-
-    return min_val, currency
+        return 0, 0, currency
+    is_hourly = "/h" in salary_str.lower() or "/godz" in salary_str.lower()
+    if is_hourly:
+        nums = [n * 168 for n in nums]
+    return min(nums), max(nums), currency
 
 def _should_include(job: dict) -> tuple:
     title_lower = job.get("title", "").lower()
@@ -80,14 +68,13 @@ def _should_include(job: dict) -> tuple:
 
     salary_str = job.get("salary", "")
     if salary_str:
-        min_val, currency = _parse_salary(salary_str)
-        if min_val > 0:
-            # USD/EUR - przelicz orientacyjnie (nie blokuj, tylko sprawdź PLN)
-            if currency == "PLN" and min_val < MIN_SALARY_PLN:
-                return False, f"za niskie wynagrodzenie ({min_val} PLN < {MIN_SALARY_PLN})"
-            # USD poniżej ~6500/mies to też za mało (6500 USD ~ 26k PLN)
-            elif currency == "USD" and min_val < 6500:
-                return False, f"za niskie wynagrodzenie ({min_val} USD)"
+        sal_min, sal_max, currency = _parse_salary(salary_str)
+        if sal_max > 0:
+            # Górne widełki muszą być >= MIN_SALARY_PLN
+            if currency == "PLN" and sal_max < MIN_SALARY_PLN:
+                return False, f"gorny prog za niski ({sal_max} PLN < {MIN_SALARY_PLN})"
+            elif currency == "USD" and sal_max < 6500:
+                return False, f"gorny prog za niski ({sal_max} USD)"
 
     return True, ""
 
