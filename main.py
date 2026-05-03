@@ -22,58 +22,56 @@ MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
 MIN_SALARY  = int(os.getenv("MIN_SALARY_B2B", "26000"))
 
-# Tytuły które wykluczamy
-EXCLUDED_TITLE_WORDS = ["lead", "manager", "head of", "director", "vp ", "principal"]
+# Wykluczamy TYLKO konkretne stanowiska zarządcze - nie "lead" bo to za szerokie
+EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader"]
+# "lead" tylko jako osobne słowo - wyklucza "Lead Data Engineer" ale nie "Data Platform"
+EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead"]
 
-# Słowa sugerujące wysoki angielski
-HIGH_ENG_WORDS   = ["c1", "c2", "fluent english", "advanced english", "native english", "excellent english", "excellent in english"]
+HIGH_ENG_WORDS   = ["c1", "c2", "fluent english", "advanced english", "native english",
+                    "excellent english", "excellent in english"]
 MEDIUM_ENG_WORDS = ["b2", "good english", "strong english", "upper intermediate"]
 
 def _check_english(job: dict) -> str:
-    """Zwraca poziom angielskiego jeśli wykryty w opisie."""
     text = f"{job.get('title','')} {job.get('description','')}".lower()
     for kw in HIGH_ENG_WORDS:
         if kw in text:
-            return f"UWAGA - wymagany wysoki poziom ({kw.upper()})"
+            return f"UWAGA wysoki poziom ({kw.upper()})"
     for kw in MEDIUM_ENG_WORDS:
         if kw in text:
-            return f"Wymaga B2"
+            return "Wymaga B2"
     return ""
 
 def _parse_salary_min(salary_str: str) -> int:
-    """Wyciąga minimalną kwotę z widełek. Zwraca 0 jeśli brak."""
     if not salary_str:
         return 0
-    numbers = re.findall(r'[\d\s]+', salary_str.replace('\xa0', ' '))
-    nums = []
-    for n in numbers:
-        clean = n.replace(' ', '').strip()
-        if clean and len(clean) >= 4:
-            try:
-                nums.append(int(clean))
-            except:
-                pass
+    # Usuń spacje między cyframi (format "26 000")
+    cleaned = salary_str.replace('\xa0', '').replace(' ', '')
+    numbers = re.findall(r'\d{4,6}', cleaned)
+    nums = [int(n) for n in numbers if int(n) >= 1000]
     return min(nums) if nums else 0
 
-def _should_include(job: dict) -> tuple[bool, str]:
-    """Zwraca (True/False, powód wykluczenia)."""
+def _should_include(job: dict) -> tuple:
     title_lower = job.get("title", "").lower()
 
-    # Wyklucz stanowiska lead/manager
+    # Wyklucz stanowiska zarządcze
     for word in EXCLUDED_TITLE_WORDS:
         if word in title_lower:
-            return False, f"wykluczone stanowisko ({word})"
+            return False, f"stanowisko zarządcze ({word})"
 
-    # Sprawdź wynagrodzenie
+    for exact in EXCLUDED_EXACT:
+        if exact in title_lower:
+            return False, f"stanowisko lead ({exact})"
+
+    # Sprawdź wynagrodzenie — tylko jeśli podane i za niskie
     salary_str = job.get("salary", "")
-    if salary_str:
+    if salary_str and salary_str != "Undisclosed Salary":
         min_sal = _parse_salary_min(salary_str)
-        if min_sal > 0 and min_sal < MIN_SALARY:
-            return False, f"za niskie wynagrodzenie ({min_sal} < {MIN_SALARY})"
+        if 0 < min_sal < MIN_SALARY:
+            return False, f"za niskie wynagrodzenie (min {min_sal} PLN)"
 
     return True, ""
 
-def _dedup_and_score(all_jobs: list, save: bool = True) -> list:
+def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -> list:
     result = []
     seen_titles = set()
 
@@ -89,7 +87,8 @@ def _dedup_and_score(all_jobs: list, save: bool = True) -> list:
 
         include, reason = _should_include(job)
         if not include:
-            print(f"   Pomijam: {job['title'][:40]} — {reason}")
+            if verbose:
+                print(f"   [-] {job['title'][:40]:<40} | {reason}")
             continue
 
         job["score"] = score_job(job)
@@ -114,7 +113,7 @@ def run():
     all_jobs.extend(fetch_pracuj())
     print(f"   Lacznie: {len(all_jobs)}")
 
-    new_jobs = _dedup_and_score(all_jobs, save=True)
+    new_jobs = _dedup_and_score(all_jobs, save=True, verbose=True)
     print(f"   Po filtrach: {len(new_jobs)}")
 
     top_jobs = get_unsent_jobs(min_score=MIN_SCORE, limit=MAX_OFFERS)
@@ -125,7 +124,7 @@ def run():
 
     print(f"\nTop oferty ({len(top_jobs)}):")
     for job in top_jobs:
-        eng = f" ⚠ {job.get('english_level','')}" if job.get('english_level') else ""
+        eng = f" !! {job.get('english_level','')}" if job.get('english_level') else ""
         print(f"   [{job['score']}%] {job['title'][:40]} – {job['company']}{eng}")
 
     success = send_digest(top_jobs)
@@ -143,13 +142,14 @@ def dry_run():
     all_jobs.extend(fetch_justjoin())
     all_jobs.extend(fetch_pracuj())
 
-    new_jobs = _dedup_and_score(all_jobs, save=False)
+    print("\n--- Odrzucone ---")
+    new_jobs = _dedup_and_score(all_jobs, save=False, verbose=True)
     new_jobs.sort(key=lambda x: x["score"], reverse=True)
 
-    print(f"\nZnaleziono {len(new_jobs)} ofert po filtrach:\n")
+    print(f"\n--- Przyjete: {len(new_jobs)} ofert ---\n")
     for job in new_jobs[:20]:
         eng = " [!ENG]" if job.get("english_level") else ""
-        sal = f" | {job['salary']}" if job.get("salary") else ""
+        sal = f" | {job['salary']}" if job.get("salary") else " | brak widełek"
         print(f"  [{job['score']:3d}%] {job['title'][:40]:<40} | {job['company'][:20]:<20}{sal}{eng}")
 
 if __name__ == "__main__":
