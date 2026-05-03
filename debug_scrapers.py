@@ -1,6 +1,4 @@
-"""
-Diagnostyka v4 - sprawdza dokładną strukturę HTML kart ofert
-"""
+"""Diagnostyka v5 - sprawdza selektory dla firmy/lokalizacji/tagów"""
 import time
 from playwright.sync_api import sync_playwright
 
@@ -13,32 +11,53 @@ def debug():
         )
         page = context.new_page()
 
-        # === NoFluffJobs - pełny HTML pierwszych 2 kart ===
+        # NoFluffJobs - pełny innerText pierwszych 3 kart
         print("=" * 60)
-        print("NoFluffJobs - HTML pierwszych 2 kart ofert")
+        print("NoFluffJobs - innerText i href pierwszych 3 kart")
         page.goto("https://nofluffjobs.com/pl/data-engineering", timeout=45000, wait_until="networkidle")
         time.sleep(3)
 
-        cards = page.query_selector_all(".posting-list-item, [class*='posting-list-item']")
-        print(f"Kart: {len(cards)}")
-        for card in cards[:2]:
-            print("\n--- KARTA ---")
-            print(card.inner_html()[:800])
+        data = page.evaluate("""
+            () => {
+                const cards = document.querySelectorAll('.posting-list-item');
+                return Array.from(cards).slice(0, 3).map(card => {
+                    const link = card.querySelector('a');
+                    return {
+                        href: link ? link.getAttribute('href') : '',
+                        text: card.innerText,
+                        html_snippet: card.innerHTML.substring(0, 600)
+                    };
+                });
+            }
+        """)
+        for i, d in enumerate(data):
+            print(f"\n--- Karta {i+1} ---")
+            print(f"HREF: {d['href']}")
+            print(f"TEXT:\n{d['text']}")
+            print(f"HTML snippet:\n{d['html_snippet']}")
 
-        # === JustJoin - pełny HTML pierwszych 2 kart ===
+        # JustJoin - pełny innerText pierwszych 3 kart
         print("\n" + "=" * 60)
-        print("JustJoin - HTML pierwszych 2 kart ofert")
+        print("JustJoin - innerText i href pierwszych 3 kart")
         page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=45000, wait_until="networkidle")
         time.sleep(4)
 
-        # Spróbuj różnych selektorów
-        for selector in ["a[href*='/job-offer/']", "[data-index]", "li[class*='offer']"]:
-            cards_jj = page.query_selector_all(selector)
-            if cards_jj:
-                print(f"\nSelektor '{selector}' znalazł {len(cards_jj)} elementów")
-                print("HTML pierwszego:")
-                print(cards_jj[0].inner_html()[:800])
-                break
+        data_jj = page.evaluate("""
+            () => {
+                const cards = document.querySelectorAll('a[href*="/job-offer/"]');
+                return Array.from(cards).slice(0, 3).map(card => {
+                    return {
+                        href: card.href,
+                        text: card.innerText,
+                        html_snippet: card.innerHTML.substring(0, 600)
+                    };
+                });
+            }
+        """)
+        for i, d in enumerate(data_jj):
+            print(f"\n--- Karta {i+1} ---")
+            print(f"HREF: {d['href']}")
+            print(f"TEXT:\n{d['text']}")
 
         browser.close()
 
