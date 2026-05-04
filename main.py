@@ -22,7 +22,7 @@ MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
 MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
 
-EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader"]
+EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader", "principal"]
 EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead"]
 
 HIGH_ENG_WORDS   = ["c1", "c2", "fluent english", "advanced english", "native english",

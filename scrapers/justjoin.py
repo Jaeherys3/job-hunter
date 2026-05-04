@@ -17,14 +17,14 @@ def fetch_justjoin() -> list:
             )
             page = context.new_page()
 
-            # JustJoin ma paginację w URL: ?page=1, ?page=2 itd.
             page_num = 1
-            max_pages = 10
-            
+            max_pages = 15
+            empty_pages = 0
+
             while page_num <= max_pages:
                 url = f"https://justjoin.it/job-offers/all-locations/data?page={page_num}"
                 page.goto(url, timeout=45000, wait_until="networkidle")
-                time.sleep(3)
+                time.sleep(2)
 
                 offers = page.evaluate("""
                     () => {
@@ -36,19 +36,14 @@ def fetch_justjoin() -> list:
                                 .split('\\n')
                                 .map(l => l.trim())
                                 .filter(l => l.length > 0);
-
-                            let idx = 0;
-                            if (lines[0] === 'Super offer') idx = 1;
-
+                            let idx = lines[0] === 'Super offer' ? 1 : 0;
                             const title = lines[idx] || '';
                             const salary = lines[idx + 1] || '';
                             const company = lines[idx + 2] || '';
                             const city = lines[idx + 3] || '';
-
                             const skipWords = ['Remote', 'Locations', 'left', 'New', 'Super offer'];
                             const tags = lines.slice(idx + 4)
                                 .filter(l => !skipWords.some(w => l.includes(w)) && !/^\\d/.test(l) && !/^,/.test(l));
-
                             if (title && url) results.push({ url, title, salary, company, city, tags });
                         });
                         return results;
@@ -56,25 +51,26 @@ def fetch_justjoin() -> list:
                 """)
 
                 if not offers:
-                    break
+                    empty_pages += 1
+                    if empty_pages >= 2:
+                        break
+                    page_num += 1
+                    continue
 
-                before = len(all_jobs)
+                empty_pages = 0
+                new_count = 0
                 for offer in offers:
                     job = _parse_offer(offer)
-                    if job and _matches_keywords(job):
+                    if job and _matches_keywords(job) and job["id"] not in all_jobs:
                         all_jobs[job["id"]] = job
+                        new_count += 1
 
-                print(f"[JustJoin] Strona {page_num}: {len(offers)} kart, lacznie pasujacych: {len(all_jobs)}")
+                print(f"[JustJoin] Strona {page_num}: {len(offers)} kart, +{new_count} nowych, lacznie: {len(all_jobs)}")
 
-                # Sprawdź czy jest następna strona
-                has_next = page.evaluate("""
-                    () => {
-                        const next = document.querySelector('a[aria-label="Go to next page"], button[aria-label="next"], [data-testid="next-page"]');
-                        return next !== null && !next.disabled;
-                    }
-                """)
-                if not has_next:
+                # Jeśli strona nie przynosi nowych ofert — koniec
+                if new_count == 0:
                     break
+
                 page_num += 1
 
             browser.close()
@@ -97,10 +93,8 @@ def _parse_offer(offer: dict) -> dict:
     salary = offer.get("salary", "")
     if salary in ("Undisclosed Salary", "Undisclosed"):
         salary = ""
-
     description = f"{title} {' '.join(tags)}"
     job_id = hashlib.md5(url.encode()).hexdigest()[:12]
-
     return {
         "id": f"jj_{job_id}",
         "title": title,

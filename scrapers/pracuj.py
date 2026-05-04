@@ -2,7 +2,7 @@ import time
 import hashlib
 from playwright.sync_api import sync_playwright
 
-KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure data", "azure", "python", "spark"]
+KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure", "spark", "python", "etl"]
 
 def fetch_pracuj() -> list:
     all_jobs = {}
@@ -17,14 +17,14 @@ def fetch_pracuj() -> list:
             )
             page = context.new_page()
 
-            # NoFluffJobs - paginacja przez URL: /data-engineering?page=1
             page_num = 1
-            max_pages = 10
+            max_pages = 15
+            empty_pages = 0
 
             while page_num <= max_pages:
                 url = f"https://nofluffjobs.com/pl/data-engineering?page={page_num}"
                 page.goto(url, timeout=45000, wait_until="networkidle")
-                time.sleep(3)
+                time.sleep(2)
 
                 offers = page.evaluate("""
                     () => {
@@ -34,19 +34,16 @@ def fetch_pracuj() -> list:
                             const linkEl = card.querySelector('a[href*="/job/"]');
                             let url = '';
                             if (linkEl) url = linkEl.href || ('https://nofluffjobs.com' + (linkEl.getAttribute('href') || ''));
-
                             const lines = (card.innerText || '')
                                 .split('\\n')
                                 .map(l => l.trim())
                                 .filter(l => l.length > 0 && l !== 'Zapisz ofertę' && l !== 'NOWA');
-
                             const title = lines[0] || '';
                             const salary = lines.find(l => /\\d/.test(l) && /(PLN|USD|EUR|zł)/.test(l)) || '';
                             const city = lines[lines.length - 1] || '';
                             const company = lines[lines.length - 2] || '';
                             const salIdx = salary ? lines.indexOf(salary) : 0;
                             const tags = lines.slice(salIdx + 1, lines.length - 2).filter(l => l.length > 0);
-
                             if (title) results.push({ url, title, salary, company, city, tags });
                         });
                         return results;
@@ -54,26 +51,27 @@ def fetch_pracuj() -> list:
                 """)
 
                 if not offers:
-                    break
+                    empty_pages += 1
+                    if empty_pages >= 2:
+                        break
+                    page_num += 1
+                    continue
 
+                empty_pages = 0
+                new_count = 0
                 for offer in offers:
                     if not offer.get("title"):
                         continue
                     job = _parse_offer(offer)
-                    if job and _matches_keywords(job):
+                    if job and _matches_keywords(job) and job["id"] not in all_jobs:
                         all_jobs[job["id"]] = job
+                        new_count += 1
 
-                print(f"[NoFluffJobs] Strona {page_num}: {len(offers)} kart, lacznie: {len(all_jobs)}")
+                print(f"[NoFluffJobs] Strona {page_num}: {len(offers)} kart, +{new_count} nowych, lacznie: {len(all_jobs)}")
 
-                # Sprawdź następną stronę
-                has_next = page.evaluate("""
-                    () => {
-                        const next = document.querySelector('a[aria-label="Next"], [aria-label="next page"], .pagination-next:not(.disabled), a[data-cy="pagination-next"]');
-                        return next !== null;
-                    }
-                """)
-                if not has_next:
+                if new_count == 0:
                     break
+
                 page_num += 1
 
             browser.close()
@@ -96,7 +94,6 @@ def _parse_offer(offer: dict) -> dict:
     description = f"{title} {' '.join(tags)}"
     uid = url if url else title
     job_id = hashlib.md5(uid.encode()).hexdigest()[:12]
-
     return {
         "id": f"nfj_{job_id}",
         "title": title,
