@@ -13,67 +13,62 @@ def fetch_justjoin() -> list:
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
                 locale="pl-PL",
-                viewport={"width": 1280, "height": 900},
+                viewport={"width": 1280, "height": 2000},  # wysoki viewport = więcej ofert na ekranie
             )
             page = context.new_page()
+            page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=60000, wait_until="networkidle")
+            time.sleep(3)
 
-            page_num = 1
-            max_pages = 15
-            empty_pages = 0
+            prev_count = 0
+            no_change_streak = 0
 
-            while page_num <= max_pages:
-                url = f"https://justjoin.it/job-offers/all-locations/data?page={page_num}"
-                page.goto(url, timeout=45000, wait_until="networkidle")
-                time.sleep(2)
+            for scroll_num in range(50):  # max 50 scrolli
+                # Scrolluj o jedną wysokość strony w dół
+                page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
+                time.sleep(1.5)
 
-                offers = page.evaluate("""
-                    () => {
-                        const results = [];
-                        const cards = document.querySelectorAll('a[href*="/job-offer/"]');
-                        cards.forEach(card => {
-                            const url = card.href || '';
-                            const lines = (card.innerText || '')
-                                .split('\\n')
-                                .map(l => l.trim())
-                                .filter(l => l.length > 0);
-                            let idx = lines[0] === 'Super offer' ? 1 : 0;
-                            const title = lines[idx] || '';
-                            const salary = lines[idx + 1] || '';
-                            const company = lines[idx + 2] || '';
-                            const city = lines[idx + 3] || '';
-                            const skipWords = ['Remote', 'Locations', 'left', 'New', 'Super offer'];
-                            const tags = lines.slice(idx + 4)
-                                .filter(l => !skipWords.some(w => l.includes(w)) && !/^\\d/.test(l) && !/^,/.test(l));
-                            if (title && url) results.push({ url, title, salary, company, city, tags });
-                        });
-                        return results;
-                    }
-                """)
+                current_count = page.evaluate("() => document.querySelectorAll('a[href*=\"/job-offer/\"]').length")
 
-                if not offers:
-                    empty_pages += 1
-                    if empty_pages >= 2:
-                        break
-                    page_num += 1
-                    continue
+                if current_count == prev_count:
+                    no_change_streak += 1
+                    if no_change_streak >= 3:
+                        break  # 3 scrolle bez zmian = koniec listy
+                else:
+                    no_change_streak = 0
+                    prev_count = current_count
 
-                empty_pages = 0
-                new_count = 0
-                for offer in offers:
-                    job = _parse_offer(offer)
-                    if job and _matches_keywords(job) and job["id"] not in all_jobs:
-                        all_jobs[job["id"]] = job
-                        new_count += 1
+            print(f"[JustJoin] Zaladowano {prev_count} kart lacznie")
 
-                print(f"[JustJoin] Strona {page_num}: {len(offers)} kart, +{new_count} nowych, lacznie: {len(all_jobs)}")
-
-                # Jeśli strona nie przynosi nowych ofert — koniec
-                if new_count == 0:
-                    break
-
-                page_num += 1
+            offers = page.evaluate("""
+                () => {
+                    const results = [];
+                    const cards = document.querySelectorAll('a[href*="/job-offer/"]');
+                    cards.forEach(card => {
+                        const url = card.href || '';
+                        const lines = (card.innerText || '')
+                            .split('\\n')
+                            .map(l => l.trim())
+                            .filter(l => l.length > 0);
+                        let idx = lines[0] === 'Super offer' ? 1 : 0;
+                        const title = lines[idx] || '';
+                        const salary = lines[idx + 1] || '';
+                        const company = lines[idx + 2] || '';
+                        const city = lines[idx + 3] || '';
+                        const skipWords = ['Remote', 'Locations', 'left', 'New', 'Super offer'];
+                        const tags = lines.slice(idx + 4)
+                            .filter(l => !skipWords.some(w => l.includes(w)) && !/^[0-9]/.test(l) && !/^,/.test(l));
+                        if (title && url) results.push({ url, title, salary, company, city, tags });
+                    });
+                    return results;
+                }
+            """)
 
             browser.close()
+
+            for offer in offers:
+                job = _parse_offer(offer)
+                if job and _matches_keywords(job):
+                    all_jobs[job["id"]] = job
 
     except Exception as e:
         print(f"[JustJoin] Blad: {e}")

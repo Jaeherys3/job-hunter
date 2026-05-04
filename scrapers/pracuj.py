@@ -23,7 +23,7 @@ def fetch_pracuj() -> list:
 
             while page_num <= max_pages:
                 url = f"https://nofluffjobs.com/pl/data-engineering?page={page_num}"
-                page.goto(url, timeout=45000, wait_until="networkidle")
+                page.goto(url, timeout=90000, wait_until="networkidle")
                 time.sleep(2)
 
                 offers = page.evaluate("""
