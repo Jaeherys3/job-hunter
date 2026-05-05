@@ -13,62 +13,56 @@ def fetch_justjoin() -> list:
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
                 locale="pl-PL",
-                viewport={"width": 1280, "height": 2000},  # wysoki viewport = więcej ofert na ekranie
             )
             page = context.new_page()
-            page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=60000, wait_until="networkidle")
-            time.sleep(3)
+            page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=60000, wait_until="domcontentloaded")
+            time.sleep(2)
 
-            prev_count = 0
-            no_change_streak = 0
-
-            for scroll_num in range(50):  # max 50 scrolli
-                # Scrolluj o jedną wysokość strony w dół
-                page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
-                time.sleep(1.5)
-
-                current_count = page.evaluate("() => document.querySelectorAll('a[href*=\"/job-offer/\"]').length")
-
-                if current_count == prev_count:
-                    no_change_streak += 1
-                    if no_change_streak >= 3:
-                        break  # 3 scrolle bez zmian = koniec listy
-                else:
-                    no_change_streak = 0
-                    prev_count = current_count
-
-            print(f"[JustJoin] Zaladowano {prev_count} kart lacznie")
-
-            offers = page.evaluate("""
-                () => {
-                    const results = [];
-                    const cards = document.querySelectorAll('a[href*="/job-offer/"]');
-                    cards.forEach(card => {
-                        const url = card.href || '';
-                        const lines = (card.innerText || '')
-                            .split('\\n')
-                            .map(l => l.trim())
-                            .filter(l => l.length > 0);
-                        let idx = lines[0] === 'Super offer' ? 1 : 0;
-                        const title = lines[idx] || '';
-                        const salary = lines[idx + 1] || '';
-                        const company = lines[idx + 2] || '';
-                        const city = lines[idx + 3] || '';
-                        const skipWords = ['Remote', 'Locations', 'left', 'New', 'Super offer'];
-                        const tags = lines.slice(idx + 4)
-                            .filter(l => !skipWords.some(w => l.includes(w)) && !/^[0-9]/.test(l) && !/^,/.test(l));
-                        if (title && url) results.push({ url, title, salary, company, city, tags });
+            # Pobierz total
+            count_data = page.evaluate("""
+                async () => {
+                    const r = await fetch('/api/candidate-api/offers/categories/count?categories=data&currency=pln&keywordType=any', {
+                        headers: { 'Accept': 'application/json' }
                     });
-                    return results;
+                    return await r.json();
                 }
             """)
+            total = count_data[0]['count'] if count_data else 1000
+            print(f"[JustJoin] Lacznie ofert: {total}")
+
+            from_idx = 0
+            while from_idx < total:
+                result = page.evaluate(f"""
+                    async () => {{
+                        const r = await fetch('/api/candidate-api/offers?categories=data&from={from_idx}&sortBy=newest&currency=pln&keywordType=any', {{
+                            headers: {{ 'Accept': 'application/json' }}
+                        }});
+                        if (!r.ok) return null;
+                        return await r.json();
+                    }}
+                """)
+
+                if not result:
+                    break
+
+                offers = result.get("data", [])
+                if not offers:
+                    break
+
+                new_count = 0
+                for offer in offers:
+                    job = _parse_offer(offer)
+                    if job and _matches_keywords(job) and job["id"] not in all_jobs:
+                        all_jobs[job["id"]] = job
+                        new_count += 1
+
+                if from_idx % 100 == 0:
+                    print(f"[JustJoin] from={from_idx}/{total}, pasujacych lacznie: {len(all_jobs)}")
+
+                from_idx += len(offers)
+                time.sleep(0.2)
 
             browser.close()
-
-            for offer in offers:
-                job = _parse_offer(offer)
-                if job and _matches_keywords(job):
-                    all_jobs[job["id"]] = job
 
     except Exception as e:
         print(f"[JustJoin] Blad: {e}")
@@ -82,21 +76,34 @@ def _matches_keywords(job: dict) -> bool:
     return any(kw.lower() in text for kw in KEYWORDS)
 
 def _parse_offer(offer: dict) -> dict:
-    url = offer.get("url", "")
-    title = offer.get("title", "")
-    tags = offer.get("tags", [])
-    salary = offer.get("salary", "")
-    if salary in ("Undisclosed Salary", "Undisclosed"):
-        salary = ""
-    description = f"{title} {' '.join(tags)}"
-    job_id = hashlib.md5(url.encode()).hexdigest()[:12]
+    if not offer:
+        return None
+
+    salary = ""
+    emp_types = offer.get("employmentTypes") or offer.get("employment_types", [])
+    if emp_types:
+        sal = emp_types[0].get("salary") or {}
+        if isinstance(sal, dict) and sal.get("from") and sal.get("to"):
+            salary = f"{sal['from']} - {sal['to']} {sal.get('currency', 'PLN')}"
+
+    workplace = offer.get("workplaceType", "")
+    city = offer.get("city", "")
+    location = "Remote" if workplace == "remote" else city
+
+    skills = offer.get("requiredSkills") or offer.get("skills", [])
+    skill_names = [s.get("name", "") if isinstance(s, dict) else str(s) for s in skills]
+    description = " ".join(filter(None, skill_names))
+
+    slug = offer.get("slug") or offer.get("id", "")
+    guid = offer.get("guid") or offer.get("id", "")
+
     return {
-        "id": f"jj_{job_id}",
-        "title": title,
-        "company": offer.get("company", ""),
-        "location": offer.get("city", ""),
+        "id": f"jj_{guid}",
+        "title": offer.get("title", ""),
+        "company": offer.get("companyName") or offer.get("company_name", ""),
+        "location": location,
         "salary": salary,
-        "url": url,
+        "url": f"https://justjoin.it/job-offer/{slug}",
         "source": "JustJoin.it",
         "description": description,
     }
