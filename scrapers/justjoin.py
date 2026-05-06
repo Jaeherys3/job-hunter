@@ -3,6 +3,7 @@ import hashlib
 from playwright.sync_api import sync_playwright
 
 KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure", "spark", "python", "etl"]
+MAX_OFFERS = 960  # API limit dla niezalogowanych
 
 def fetch_justjoin() -> list:
     all_jobs = {}
@@ -18,7 +19,6 @@ def fetch_justjoin() -> list:
             page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=60000, wait_until="domcontentloaded")
             time.sleep(2)
 
-            # Pobierz total
             count_data = page.evaluate("""
                 async () => {
                     const r = await fetch('/api/candidate-api/offers/categories/count?categories=data&currency=pln&keywordType=any', {
@@ -27,8 +27,8 @@ def fetch_justjoin() -> list:
                     return await r.json();
                 }
             """)
-            total = count_data[0]['count'] if count_data else 1000
-            print(f"[JustJoin] Lacznie ofert: {total}")
+            total = min(count_data[0]['count'] if count_data else MAX_OFFERS, MAX_OFFERS)
+            print(f"[JustJoin] Pobieranie {total} ofert...")
 
             from_idx = 0
             while from_idx < total:
@@ -49,17 +49,19 @@ def fetch_justjoin() -> list:
                 if not offers:
                     break
 
-                new_count = 0
                 for offer in offers:
                     job = _parse_offer(offer)
-                    if job and _matches_keywords(job) and job["id"] not in all_jobs:
+                    if job and _matches_keywords(job):
                         all_jobs[job["id"]] = job
-                        new_count += 1
 
-                if from_idx % 100 == 0:
-                    print(f"[JustJoin] from={from_idx}/{total}, pasujacych lacznie: {len(all_jobs)}")
+                if from_idx % 200 == 0:
+                    print(f"[JustJoin] from={from_idx}/{total}, pasujacych: {len(all_jobs)}")
 
                 from_idx += len(offers)
+
+                if len(offers) < 10:
+                    break
+
                 time.sleep(0.2)
 
             browser.close()

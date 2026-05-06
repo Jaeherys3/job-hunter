@@ -1,8 +1,14 @@
 import time
 import hashlib
+import json
 from playwright.sync_api import sync_playwright
 
-KEYWORDS = ["databricks", "data engineer", "airflow", "pyspark", "azure", "spark", "python", "etl"]
+SEARCHES = [
+    "data engineer",
+    "databricks",
+    "airflow python",
+    "pyspark azure",
+]
 
 def fetch_pracuj() -> list:
     all_jobs = {}
@@ -13,66 +19,62 @@ def fetch_pracuj() -> list:
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
                 locale="pl-PL",
-                viewport={"width": 1280, "height": 900},
             )
             page = context.new_page()
+            page.goto("https://nofluffjobs.com/pl", timeout=90000, wait_until="domcontentloaded")
+            time.sleep(2)
 
-            page_num = 1
-            max_pages = 15
-            empty_pages = 0
-
-            while page_num <= max_pages:
-                url = f"https://nofluffjobs.com/pl/data-engineering?page={page_num}"
-                page.goto(url, timeout=90000, wait_until="domcontentloaded")
-                time.sleep(3)
-
-                offers = page.evaluate("""
-                    () => {
-                        const results = [];
-                        const cards = document.querySelectorAll('.posting-list-item');
-                        cards.forEach(card => {
-                            const linkEl = card.querySelector('a[href*="/job/"]');
-                            let url = '';
-                            if (linkEl) url = linkEl.href || ('https://nofluffjobs.com' + (linkEl.getAttribute('href') || ''));
-                            const lines = (card.innerText || '')
-                                .split('\\n')
-                                .map(l => l.trim())
-                                .filter(l => l.length > 0 && l !== 'Zapisz ofertę' && l !== 'NOWA');
-                            const title = lines[0] || '';
-                            const salary = lines.find(l => /\\d/.test(l) && /(PLN|USD|EUR|zł)/.test(l)) || '';
-                            const city = lines[lines.length - 1] || '';
-                            const company = lines[lines.length - 2] || '';
-                            const salIdx = salary ? lines.indexOf(salary) : 0;
-                            const tags = lines.slice(salIdx + 1, lines.length - 2).filter(l => l.length > 0);
-                            if (title) results.push({ url, title, salary, company, city, tags });
-                        });
-                        return results;
-                    }
+            for keyword in SEARCHES:
+                # Sprawdź ile ofert jest łącznie
+                count_result = page.evaluate(f"""
+                    async () => {{
+                        const r = await fetch('/api/search/posting?pageTo=1&pageSize=1&salaryCurrency=PLN&salaryPeriod=month', {{
+                            method: 'POST',
+                            headers: {{'Content-Type':'application/json','Accept':'application/json'}},
+                            body: JSON.stringify({{"criteria":"","rawSearch":"{keyword}","pageSize":1}})
+                        }});
+                        const data = await r.json();
+                        return data.totalCount || 0;
+                    }}
                 """)
 
-                if not offers:
-                    empty_pages += 1
-                    if empty_pages >= 2:
+                total = int(count_result) if count_result else 0
+                page_size = 100
+                pages_needed = min((total // page_size) + 2, 15)  # max 1500 ofert per keyword
+
+                print(f"[NoFluffJobs] '{keyword}': {total} ofert, pobieranie {pages_needed} stron...")
+
+                for page_to in range(1, pages_needed + 1):
+                    result = page.evaluate(f"""
+                        async () => {{
+                            const r = await fetch('/api/search/posting?pageTo={page_to}&pageSize={page_size}&salaryCurrency=PLN&salaryPeriod=month', {{
+                                method: 'POST',
+                                headers: {{'Content-Type':'application/json','Accept':'application/json'}},
+                                body: JSON.stringify({{"criteria":"","rawSearch":"{keyword}","pageSize":{page_size}}})
+                            }});
+                            if (!r.ok) return null;
+                            return await r.json();
+                        }}
+                    """)
+
+                    if not result:
                         break
-                    page_num += 1
-                    continue
 
-                empty_pages = 0
-                new_count = 0
-                for offer in offers:
-                    if not offer.get("title"):
-                        continue
-                    job = _parse_offer(offer)
-                    if job and _matches_keywords(job) and job["id"] not in all_jobs:
-                        all_jobs[job["id"]] = job
-                        new_count += 1
+                    postings = result.get("postings", [])
+                    if not postings:
+                        break
 
-                print(f"[NoFluffJobs] Strona {page_num}: {len(offers)} kart, +{new_count} nowych, lacznie: {len(all_jobs)}")
+                    new_count = 0
+                    for posting in postings:
+                        job = _parse_posting(posting)
+                        if job and job["id"] not in all_jobs:
+                            all_jobs[job["id"]] = job
+                            new_count += 1
 
-                if new_count == 0:
-                    break
+                    if new_count == 0:
+                        break
 
-                page_num += 1
+                    time.sleep(0.3)
 
             browser.close()
 
@@ -80,27 +82,48 @@ def fetch_pracuj() -> list:
         print(f"[NoFluffJobs] Blad: {e}")
 
     result_list = list(all_jobs.values())
-    print(f"[NoFluffJobs] Lacznie pobrano {len(result_list)} pasujacych ofert")
+    print(f"[NoFluffJobs] Lacznie pobrano {len(result_list)} unikalnych ofert")
     return result_list
 
-def _matches_keywords(job: dict) -> bool:
-    text = f"{job['title']} {job['description']}".lower()
-    return any(kw.lower() in text for kw in KEYWORDS)
+def _parse_posting(posting: dict) -> dict:
+    if not posting:
+        return None
 
-def _parse_offer(offer: dict) -> dict:
-    url = offer.get("url", "")
-    title = offer.get("title", "")
-    tags = offer.get("tags", [])
-    description = f"{title} {' '.join(tags)}"
-    uid = url if url else title
-    job_id = hashlib.md5(uid.encode()).hexdigest()[:12]
+    salary = ""
+    sal = posting.get("salary")
+    if sal:
+        frm = sal.get("from", "")
+        to = sal.get("to", "")
+        currency = sal.get("currency", "PLN")
+        if frm and to:
+            salary = f"{frm} - {to} {currency}"
+
+    location_data = posting.get("location", {})
+    remote = location_data.get("fullyRemote", False)
+    places = location_data.get("places", [])
+    if remote:
+        location = "Remote"
+    elif places:
+        city = places[0].get("city", {})
+        location = city.get("name", "Polska") if isinstance(city, dict) else str(city)
+    else:
+        location = "Polska"
+
+    skills = posting.get("technology", []) or []
+    skill_names = [str(s) for s in skills if s]
+    title = posting.get("title", "")
+    description = f"{title} {' '.join(skill_names)}"
+
+    post_id = posting.get("id") or posting.get("slug", "")
+    post_url = posting.get("url", post_id)
+
     return {
-        "id": f"nfj_{job_id}",
+        "id": f"nfj_{post_id}",
         "title": title,
-        "company": offer.get("company", "").lstrip(),
-        "location": offer.get("city", ""),
-        "salary": offer.get("salary", ""),
-        "url": url or "https://nofluffjobs.com/pl/data-engineering",
+        "company": posting.get("name", ""),
+        "location": location,
+        "salary": salary,
+        "url": f"https://nofluffjobs.com/pl/job/{post_url}",
         "source": "NoFluffJobs",
         "description": description,
     }

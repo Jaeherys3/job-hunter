@@ -1,3 +1,4 @@
+"""Sprawdza JustJoin from=900+"""
 import time
 from playwright.sync_api import sync_playwright
 
@@ -12,30 +13,21 @@ def debug():
         page.goto("https://justjoin.it/job-offers/all-locations/data", timeout=60000, wait_until="domcontentloaded")
         time.sleep(2)
 
-        # Sprawdź różne parametry paginacji
-        for test in [
-            "cursor=0",
-            "cursor=10", 
-            "cursor=20",
-            "from=0",
-            "from=10",
-            "from=20",
-            "offset=0",
-            "offset=10",
-        ]:
+        for from_val in [900, 950, 960, 970, 980, 990, 1000, 1050, 1100, 1500, 2000]:
             result = page.evaluate(f"""
                 async () => {{
-                    const r = await fetch('/api/candidate-api/offers?categories=data&{test}&sortBy=newest&currency=pln', {{
+                    const r = await fetch('/api/candidate-api/offers?categories=data&from={from_val}&sortBy=newest&currency=pln&keywordType=any', {{
                         headers: {{ 'Accept': 'application/json' }}
                     }});
                     const data = await r.json();
-                    const meta = data.meta || {{}};
-                    const first = data.data?.[0]?.title || '';
-                    const last = data.data?.[data.data?.length-1]?.title || '';
-                    return {{ count: data.data?.length, meta_from: meta.from, next_cursor: meta.next?.cursor, first, last }};
+                    return {{
+                        count: data.data?.length || 0,
+                        total: data.meta?.totalItems || 0,
+                        first: data.data?.[0]?.title?.substring(0,40) || 'BRAK'
+                    }};
                 }}
             """)
-            print(f"  {test:15} -> count={result.get('count')}, from={result.get('meta_from')}, next_cursor={result.get('next_cursor')}, first={result.get('first','')[:30]}")
+            print(f"from={from_val:5}: count={result['count']}, total={result['total']}, first={result['first']}")
 
         browser.close()
 

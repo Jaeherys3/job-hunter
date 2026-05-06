@@ -23,7 +23,7 @@ MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
 MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
 
 EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader", "principal"]
-EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead"]
+EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead", "data lead", "lead data scientist", "lead data analyst", "lead machine learning"]
 
 HIGH_ENG_WORDS   = ["c1", "c2", "fluent english", "advanced english", "native english",
                     "excellent english", "excellent in english"]
