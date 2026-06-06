@@ -1,5 +1,5 @@
 import re
-from scoring.english import detect_english_level, ENGLISH_HIGH, ENGLISH_OK
+from scoring.english import assess_english, ENGLISH_HIGH, ENGLISH_OK
 
 # Scoring oparty na rzadkich technologiach - te które faktycznie wyróżniają ofertę
 # Podzielony na 3 poziomy:
@@ -71,7 +71,7 @@ def score_job(job: dict) -> int:
         if kw in req_text:
             score += penalty
 
-    level, _ = detect_english_level(text)
+    level, _ = assess_english(job.get("languages"), text)
     if level == ENGLISH_HIGH:
         score -= 15
     elif level == ENGLISH_OK:

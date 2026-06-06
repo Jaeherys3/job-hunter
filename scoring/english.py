@@ -83,6 +83,58 @@ def english_label(level: str, matched: str) -> str:
     return ""
 
 
+# --- Ocena na podstawie USTRUKTURYZOWANEJ listy jezykow (np. JustJoin: en C1) ---
+# Izolujemy poziom KONKRETNIE angielskiego - "fr C1" nie moze odrzucic oferty,
+# w ktorej angielski jest na B1.
+_EN_CODES = {"en", "eng", "english", "angielski"}
+CEFR_HIGH = {"c1", "c2"}
+CEFR_OK = {"b2"}
+CEFR_LOW = {"a1", "a2", "b1"}   # w zasiegu B1 -> nie karzemy
+
+
+def _cefr_bucket(level: str) -> str | None:
+    lvl = (level or "").strip().lower()
+    if lvl in CEFR_HIGH:
+        return ENGLISH_HIGH
+    if lvl in CEFR_OK:
+        return ENGLISH_OK
+    if lvl in CEFR_LOW:
+        return ENGLISH_NONE
+    return None  # nieznany/ brak poziomu
+
+
+def assess_english(languages: list | None, *fallback_texts: str) -> tuple[str, str]:
+    """
+    Glowna funkcja oceny. Najpierw probuje USTRUKTURYZOWANEGO poziomu angielskiego,
+    a gdy go brak - wraca do regexu po tekscie (fallback_texts).
+
+    languages: lista znormalizowana w detail.py, elementy:
+        {"code": "en", "level": "C1" | None, "required": True/False}
+    Zwraca (poziom, etykieta_dopasowania).
+    """
+    for lang in languages or []:
+        if str(lang.get("code", "")).lower() in _EN_CODES:
+            bucket = _cefr_bucket(lang.get("level"))
+            if bucket is not None:
+                lvl = str(lang.get("level", "")).upper()
+                return bucket, f"EN {lvl}"
+            # angielski jest, ale bez poziomu -> nie konczymy, sprobujemy regexu nizej
+            break
+
+    # Fallback: brak ustrukturyzowanego poziomu angielskiego
+    return detect_english_level(*fallback_texts)
+
+
+def foreign_required_languages(languages: list | None) -> list:
+    """Zwraca kody wymaganych jezykow INNYCH niz angielski (np. ['fr', 'de'])."""
+    out = []
+    for lang in languages or []:
+        code = str(lang.get("code", "")).lower()
+        if code and code not in _EN_CODES and lang.get("required"):
+            out.append(code)
+    return out
+
+
 if __name__ == "__main__":
     # Szybki test pulapek
     cases = [

@@ -17,7 +17,7 @@ from scrapers.justjoin import fetch_justjoin
 from scrapers.pracuj import fetch_pracuj
 from scoring.scorer import score_job
 from notifications.whatsapp import send_digest, send_test_message
-from scoring.english import detect_english_level, english_label, ENGLISH_HIGH
+from scoring.english import assess_english, english_label, ENGLISH_HIGH
 from scrapers.detail import enrich_jobs
 
 
@@ -103,7 +103,8 @@ def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -
     result = []
     for job in candidates:
         job["score"] = score_job(job)
-        eng_level, eng_match = detect_english_level(
+        eng_level, eng_match = assess_english(
+            job.get("languages"),
             job.get("title", ""), job.get("description", ""), job.get("detail_text", "")
         )
         if FILTER_HIGH_ENGLISH and eng_level == ENGLISH_HIGH:
