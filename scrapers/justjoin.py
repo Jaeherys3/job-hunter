@@ -89,8 +89,17 @@ def _parse_offer(offer: dict) -> dict:
             salary = f"{sal['from']} - {sal['to']} {sal.get('currency', 'PLN')}"
 
     workplace = offer.get("workplaceType", "")
-    city = offer.get("city", "")
-    location = "Remote" if workplace == "remote" else city
+    remote = workplace == "remote"
+
+    cities = []
+    if offer.get("city"):
+        cities.append(str(offer["city"]))
+    for ml in offer.get("multilocation") or []:
+        if isinstance(ml, dict) and ml.get("city"):
+            cities.append(str(ml["city"]))
+    cities = [c.lower() for c in cities]
+
+    location = "Remote" if remote else (offer.get("city", "") or "")
 
     skills = offer.get("requiredSkills") or offer.get("skills", [])
     skill_names = [s.get("name", "") if isinstance(s, dict) else str(s) for s in skills]
@@ -104,6 +113,8 @@ def _parse_offer(offer: dict) -> dict:
         "title": offer.get("title", ""),
         "company": offer.get("companyName") or offer.get("company_name", ""),
         "location": location,
+        "remote": remote,
+        "cities": cities,
         "salary": salary,
         "url": f"https://justjoin.it/job-offer/{slug}",
         "source": "JustJoin.it",

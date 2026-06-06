@@ -98,14 +98,22 @@ def _parse_posting(posting: dict) -> dict:
         if frm and to:
             salary = f"{frm} - {to} {currency}"
 
-    location_data = posting.get("location", {})
-    remote = location_data.get("fullyRemote", False)
-    places = location_data.get("places", [])
+    location_data = posting.get("location", {}) or {}
+    remote = bool(location_data.get("fullyRemote", False))
+    places = location_data.get("places", []) or []
+
+    cities = []
+    for pl in places:
+        c = pl.get("city") if isinstance(pl, dict) else None
+        name = c.get("name") if isinstance(c, dict) else c
+        if name:
+            cities.append(str(name))
+    cities = [c.lower() for c in cities]
+
     if remote:
         location = "Remote"
-    elif places:
-        city = places[0].get("city", {})
-        location = city.get("name", "Polska") if isinstance(city, dict) else str(city)
+    elif cities:
+        location = cities[0].title()
     else:
         location = "Polska"
 
@@ -122,6 +130,8 @@ def _parse_posting(posting: dict) -> dict:
         "title": title,
         "company": posting.get("name", ""),
         "location": location,
+        "remote": remote,
+        "cities": cities,
         "salary": salary,
         "url": f"https://nofluffjobs.com/pl/job/{post_url}",
         "source": "NoFluffJobs",

@@ -31,6 +31,15 @@ KNOWN_LANGUAGES = {
 }
 FILTER_FOREIGN_LANG = os.getenv("FILTER_FOREIGN_LANG", "1") == "1"
 
+# Filtr lokalizacji: dopuszczamy tylko prace zdalna lub wskazane miasta.
+FILTER_LOCATION = os.getenv("FILTER_LOCATION", "1") == "1"
+ALLOW_REMOTE = os.getenv("ALLOW_REMOTE", "1") == "1"
+ALLOWED_CITIES = {
+    c.strip().lower()
+    for c in os.getenv("ALLOWED_CITIES", "bydgoszcz").split(",")
+    if c.strip()
+}
+
 MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
 MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
@@ -55,6 +64,27 @@ def _parse_salary(salary_str: str) -> tuple:
         nums = [n * 168 for n in nums]
     return min(nums), max(nums), currency
 
+def _location_ok(job: dict) -> bool:
+    """True jesli oferta jest zdalna LUB w dozwolonym miescie."""
+    # remote: uzyj flagi jesli jest, inaczej wywnioskuj z pola location
+    if "remote" in job:
+        remote = bool(job["remote"])
+    else:
+        remote = "remote" in job.get("location", "").lower() \
+            or "zdaln" in job.get("location", "").lower()
+
+    if ALLOW_REMOTE and remote:
+        return True
+
+    # miasta: uzyj listy jesli jest, inaczej pole location
+    cities = job.get("cities")
+    if not cities:
+        cities = [job.get("location", "")]
+    cities = [str(c).lower() for c in cities if c]
+
+    return any(allowed in city for city in cities for allowed in ALLOWED_CITIES)
+
+
 def _should_include(job: dict) -> tuple:
     title_lower = job.get("title", "").lower()
 
@@ -65,6 +95,9 @@ def _should_include(job: dict) -> tuple:
     for exact in EXCLUDED_EXACT:
         if exact in title_lower:
             return False, f"stanowisko lead ({exact})"
+
+    if FILTER_LOCATION and not _location_ok(job):
+        return False, f"lokalizacja ({job.get('location','?')})"
 
     salary_str = job.get("salary", "")
     if salary_str:
