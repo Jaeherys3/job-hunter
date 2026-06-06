@@ -1,4 +1,5 @@
 import re
+from scoring.english import detect_english_level, ENGLISH_HIGH, ENGLISH_OK
 
 # Scoring oparty na rzadkich technologiach - te które faktycznie wyróżniają ofertę
 # Podzielony na 3 poziomy:
@@ -46,11 +47,6 @@ PENALTIES = {
     "ruby":    -6,
 }
 
-# Kary za angielski
-HIGH_ENG   = ["c1", "c2", "fluent english", "advanced english", "native english",
-              "excellent english", "excellent in english"]
-MEDIUM_ENG = ["b2", "good english", "strong english", "upper intermediate"]
-
 # Normalizacja - max osiągalny score przy idealnym dopasowaniu
 # Tier1 max (databricks+airflow+adf+pyspark) = 95, plus trochę tier2
 MAX_SCORE = 95
@@ -75,10 +71,10 @@ def score_job(job: dict) -> int:
         if kw in req_text:
             score += penalty
 
-    # Kara za wysoki angielski
-    if any(kw in text for kw in HIGH_ENG):
+    level, _ = detect_english_level(text)
+    if level == ENGLISH_HIGH:
         score -= 15
-    elif any(kw in text for kw in MEDIUM_ENG):
+    elif level == ENGLISH_OK:
         score -= 7
 
     return int(min(100, max(0, (score / MAX_SCORE) * 100)))

@@ -17,6 +17,10 @@ from scrapers.justjoin import fetch_justjoin
 from scrapers.pracuj import fetch_pracuj
 from scoring.scorer import score_job
 from notifications.whatsapp import send_digest, send_test_message
+from scoring.english import detect_english_level, english_label, ENGLISH_HIGH
+
+
+FILTER_HIGH_ENGLISH = os.getenv("FILTER_HIGH_ENGLISH", "1") == "1"
 
 MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
@@ -25,19 +29,6 @@ MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
 EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader", "principal"]
 EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead", "data lead", "lead data scientist", "lead data analyst", "lead machine learning"]
 
-HIGH_ENG_WORDS   = ["c1", "c2", "fluent english", "advanced english", "native english",
-                    "excellent english", "excellent in english"]
-MEDIUM_ENG_WORDS = ["b2", "good english", "strong english", "upper intermediate"]
-
-def _check_english(job: dict) -> str:
-    text = f"{job.get('title','')} {job.get('description','')}".lower()
-    for kw in HIGH_ENG_WORDS:
-        if kw in text:
-            return f"UWAGA wysoki poziom ({kw.upper()})"
-    for kw in MEDIUM_ENG_WORDS:
-        if kw in text:
-            return "Wymaga B2"
-    return ""
 
 def _parse_salary(salary_str: str) -> tuple:
     """Zwraca (min, max, currency). Obsługuje PLN/h, PLN/mies, USD."""
@@ -99,7 +90,12 @@ def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -
             continue
 
         job["score"] = score_job(job)
-        job["english_level"] = _check_english(job)
+        eng_level, eng_match = detect_english_level(job.get("title",""), job.get("description",""))
+        if FILTER_HIGH_ENGLISH and eng_level == ENGLISH_HIGH:
+            if verbose:
+                print(f"   [-] {job['title'][:40]:<40} | angielski {eng_match.upper()}")
+            continue
+        job["english_level"] = english_label(eng_level, eng_match)
 
         if save:
             save_job(job)
