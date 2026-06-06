@@ -18,6 +18,7 @@ from scrapers.pracuj import fetch_pracuj
 from scoring.scorer import score_job
 from notifications.whatsapp import send_digest, send_test_message
 from scoring.english import detect_english_level, english_label, ENGLISH_HIGH
+from scrapers.detail import enrich_jobs
 
 
 FILTER_HIGH_ENGLISH = os.getenv("FILTER_HIGH_ENGLISH", "1") == "1"
@@ -70,9 +71,10 @@ def _should_include(job: dict) -> tuple:
     return True, ""
 
 def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -> list:
-    result = []
     seen_titles = set()
+    candidates = []
 
+    # Faza 1: tanie filtry (juz-widziane, dedup, tytul, widelki)
     for job in all_jobs:
         if is_seen(job["id"]):
             continue
@@ -89,8 +91,21 @@ def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -
                 print(f"   [-] {job['title'][:40]:<40} | {job.get('salary',''):<20} | {reason}")
             continue
 
+        candidates.append(job)
+
+    # Faza 2: dociagniecie pelnego detalu TYLKO dla kandydatow (po taniejszych filtrach)
+    if candidates:
+        if verbose:
+            print(f"   Dociagam detal dla {len(candidates)} ofert...")
+        enrich_jobs(candidates, verbose=verbose)
+
+    # Faza 3: scoring + filtr angielskiego na wzbogaconym tekscie
+    result = []
+    for job in candidates:
         job["score"] = score_job(job)
-        eng_level, eng_match = detect_english_level(job.get("title",""), job.get("description",""))
+        eng_level, eng_match = detect_english_level(
+            job.get("title", ""), job.get("description", ""), job.get("detail_text", "")
+        )
         if FILTER_HIGH_ENGLISH and eng_level == ENGLISH_HIGH:
             if verbose:
                 print(f"   [-] {job['title'][:40]:<40} | angielski {eng_match.upper()}")

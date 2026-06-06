@@ -52,7 +52,7 @@ PENALTIES = {
 MAX_SCORE = 95
 
 def score_job(job: dict) -> int:
-    text = f"{job.get('title', '')} {job.get('description', '')}".lower()
+    text = f"{job.get('title', '')} {job.get('description', '')} {job.get('detail_text', '')}".lower()
 
     score = 0
     matched = set()
