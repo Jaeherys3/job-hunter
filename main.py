@@ -17,11 +17,19 @@ from scrapers.justjoin import fetch_justjoin
 from scrapers.pracuj import fetch_pracuj
 from scoring.scorer import score_job
 from notifications.whatsapp import send_digest, send_test_message
-from scoring.english import assess_english, english_label, ENGLISH_HIGH
+from scoring.english import assess_english, english_label, ENGLISH_HIGH, required_languages_outside
 from scrapers.detail import enrich_jobs
 
 
 FILTER_HIGH_ENGLISH = os.getenv("FILTER_HIGH_ENGLISH", "1") == "1"
+
+# Twoje jezyki - oferta wymagajaca jezyka spoza tej listy zostanie odrzucona.
+KNOWN_LANGUAGES = {
+    c.strip().lower()
+    for c in os.getenv("KNOWN_LANGUAGES", "pl,en,ru").split(",")
+    if c.strip()
+}
+FILTER_FOREIGN_LANG = os.getenv("FILTER_FOREIGN_LANG", "1") == "1"
 
 MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
@@ -102,6 +110,14 @@ def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -
     # Faza 3: scoring + filtr angielskiego na wzbogaconym tekscie
     result = []
     for job in candidates:
+        # Filtr jezykow obcych (wymagany jezyk spoza Twojej listy znanych)
+        if FILTER_FOREIGN_LANG:
+            foreign = required_languages_outside(job.get("languages"), KNOWN_LANGUAGES)
+            if foreign:
+                if verbose:
+                    print(f"   [-] {job['title'][:40]:<40} | wymaga jezyka: {','.join(c.upper() for c in foreign)}")
+                continue
+
         job["score"] = score_job(job)
         eng_level, eng_match = assess_english(
             job.get("languages"),

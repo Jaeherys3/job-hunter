@@ -135,6 +135,21 @@ def foreign_required_languages(languages: list | None) -> list:
     return out
 
 
+def required_languages_outside(languages: list | None, known_codes) -> list:
+    """
+    Zwraca kody jezykow WYMAGANYCH (required=True), ktorych NIE ma na liscie
+    znanych przez kandydata (known_codes). To wlasnie one dyskwalifikuja oferte.
+    Np. known={'pl','en','ru'}, oferta wymaga 'fr' -> zwroci ['fr'].
+    """
+    known = {str(c).lower() for c in known_codes}
+    out = []
+    for lang in languages or []:
+        code = str(lang.get("code", "")).lower()
+        if code and lang.get("required") and code not in known:
+            out.append(code)
+    return out
+
+
 if __name__ == "__main__":
     # Szybki test pulapek
     cases = [
