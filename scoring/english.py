@@ -13,7 +13,15 @@ a "EC2" jako "C2".
 
 import re
 
-# --- Frazy oznaczajace poziom POWYZEJ B1 (ang. + pol.) ---
+# Fold polskich diakrytykow -> ASCII, zeby wzorce lapaly "płynny" i "plynny".
+_PL_MAP = str.maketrans("ąćęłńóśźż", "acelnoszz")
+
+
+def _fold(*texts: str) -> str:
+    return " ".join(t for t in texts if t).lower().translate(_PL_MAP)
+
+
+# --- Frazy oznaczajace poziom POWYZEJ B1 (ang. + pol., zapis po foldzie = ASCII) ---
 HIGH_ENGLISH_PATTERNS = [
     r"\bc1\b",
     r"\bc2\b",
@@ -26,10 +34,11 @@ HIGH_ENGLISH_PATTERNS = [
     r"\bexcellent (?:english|command of english)\b",
     r"\bproficient\b",
     r"\bproficiency\b",
-    # polski
-    r"\bbiegł\w*\b",                       # biegła / biegłej / biegle
+    # polski (ASCII po foldzie)
+    r"\bbiegl\w*\b",                              # biegla / bieglej / biegle
+    r"\bplynn\w*(?:\s+\w+){0,3}\s+angielsk\w*",   # plynny/plynnego ... angielski
     r"\bzaawansowan\w* angielsk\w*\b",
-    r"\bswobodn\w* (?:komunikacj\w*|posługiwani\w*)",
+    r"\bswobodn\w* (?:komunikacj\w*|poslugiwani\w*)",
 ]
 
 # --- Frazy oznaczajace ~B2 (graniczne dla B1) ---
@@ -39,8 +48,8 @@ MEDIUM_ENGLISH_PATTERNS = [
     r"\bvery good (?:command of )?english\b",
     r"\bgood (?:command of )?english\b",
     r"\bstrong english\b",
-    # polski
-    r"\bdobr\w* (?:znajomość )?(?:język\w* )?angielsk\w*\b",
+    # polski (ASCII po foldzie)
+    r"\bdobr\w* (?:znajomosc )?(?:jezyk\w* )?angielsk\w*\b",
     r"\bkomunikatywn\w* angielsk\w*\b",
 ]
 
@@ -59,7 +68,7 @@ def detect_english_level(*texts: str) -> tuple[str, str]:
     poziom in {ENGLISH_NONE, ENGLISH_OK, ENGLISH_HIGH}.
     Przyjmuje dowolna liczbe pol tekstowych (title, description, requirements...).
     """
-    text = " ".join(t for t in texts if t).lower()
+    text = _fold(*texts)
 
     for rx in _HIGH_RE:
         m = rx.search(text)
@@ -103,25 +112,74 @@ def _cefr_bucket(level: str) -> str | None:
     return None  # nieznany/ brak poziomu
 
 
+# Sygnaly w TRESCI ktore dotycza KONKRETNIE angielskiego (wymagaja "english"/"angielsk"
+# w poblizu), wiec nie zlapia "fluent French" ani francuskiego C1.
+HIGH_EN_SPECIFIC = [
+    r"\bfluent (?:in )?english\b",
+    r"\bfluency in english\b",
+    r"\bnative(?:[- ]?like)? english\b",
+    r"\bnear[- ]?native english\b",
+    r"\b(?:advanced|excellent|proficient|proficiency)\b[^.]{0,20}\benglish\b",
+    r"\benglish\b[^.]{0,20}\b(?:c1|c2|advanced|fluent|native|proficien\w*)\b",
+    # polski (ASCII po foldzie)
+    r"plynn\w*(?:\s+\w+){0,3}\s+angielsk\w*",
+    r"biegl\w*(?:\s+\w+){0,3}\s+angielsk\w*",
+    r"angielsk\w*(?:\s+\w+){0,3}\s+(?:biegl\w*|plynn\w*|zaawansowan\w*|c1|c2)",
+    r"zaawansowan\w*(?:\s+\w+){0,3}\s+angielsk\w*",
+]
+OK_EN_SPECIFIC = [
+    r"\b(?:good|very good|strong|upper[- ]intermediate)\b[^.]{0,20}\benglish\b",
+    r"\benglish\b[^.]{0,15}\bb2\b",
+    # polski (ASCII po foldzie)
+    r"(?:dobr\w*|komunikatywn\w*)(?:\s+\w+){0,3}\s+angielsk\w*",
+    r"angielsk\w*(?:\s+\w+){0,3}\s+(?:b2|komunikatywn\w*|dobr\w*)",
+]
+_HIGH_EN_RE = [re.compile(p) for p in HIGH_EN_SPECIFIC]
+_OK_EN_RE = [re.compile(p) for p in OK_EN_SPECIFIC]
+
+
 def assess_english(languages: list | None, *fallback_texts: str) -> tuple[str, str]:
     """
-    Glowna funkcja oceny. Najpierw probuje USTRUKTURYZOWANEGO poziomu angielskiego,
-    a gdy go brak - wraca do regexu po tekscie (fallback_texts).
+    Ocena poziomu angielskiego, warstwowo (od najmocniejszego sygnalu):
 
-    languages: lista znormalizowana w detail.py, elementy:
-        {"code": "en", "level": "C1" | None, "required": True/False}
+    1. TRESC z angielsko-specyficznym sygnalem PLYNNOSCI (fluent/native/płynny/biegły...)
+       -> HIGH. Wygrywa nawet nad tagiem "B2" w strukturze (oferta realnie chce plynnosci).
+    2. USTRUKTURYZOWANY poziom angielskiego (np. JustJoin "en C1") - izolujemy angielski,
+       wiec "fr C1" nie zaszkodzi.
+    3. TRESC z sygnalem ~B2 -> OK.
+    4. Brak ustrukturyzowanego poziomu -> ostateczny fallback (regex po calym tekscie).
+
     Zwraca (poziom, etykieta_dopasowania).
     """
+    text = _fold(*fallback_texts)
+
+    # 1. Tresc: plynnosc angielskiego (najsilniejszy sygnal)
+    for rx in _HIGH_EN_RE:
+        m = rx.search(text)
+        if m:
+            return ENGLISH_HIGH, m.group(0).strip()
+
+    # 2. Ustrukturyzowany poziom angielskiego
+    struct = None
     for lang in languages or []:
         if str(lang.get("code", "")).lower() in _EN_CODES:
-            bucket = _cefr_bucket(lang.get("level"))
-            if bucket is not None:
-                lvl = str(lang.get("level", "")).upper()
-                return bucket, f"EN {lvl}"
-            # angielski jest, ale bez poziomu -> nie konczymy, sprobujemy regexu nizej
+            struct = _cefr_bucket(lang.get("level"))
+            struct_lvl = str(lang.get("level", "")).upper()
             break
+    if struct == ENGLISH_HIGH:
+        return ENGLISH_HIGH, f"EN {struct_lvl}"
 
-    # Fallback: brak ustrukturyzowanego poziomu angielskiego
+    # 3. Tresc: sygnal ~B2
+    for rx in _OK_EN_RE:
+        m = rx.search(text)
+        if m:
+            return ENGLISH_OK, m.group(0).strip()
+    if struct == ENGLISH_OK:
+        return ENGLISH_OK, f"EN {struct_lvl}"
+    if struct == ENGLISH_NONE:
+        return ENGLISH_NONE, f"EN {struct_lvl}"  # B1/A2 -> w zasiegu
+
+    # 4. Brak ustrukturyzowanego poziomu (np. NFJ "en MUST" bez poziomu) -> pelny regex
     return detect_english_level(*fallback_texts)
 
 

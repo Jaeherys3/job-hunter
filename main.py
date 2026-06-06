@@ -50,6 +50,18 @@ MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
 EXCLUDED_TITLE_WORDS = ["manager", "head of", "director", "vp ", "team leader", "principal"]
 EXCLUDED_EXACT = ["lead data engineer", "engineering lead", "tech lead", "data lead", "lead data scientist", "lead data analyst", "lead machine learning"]
 
+# Filtr roli: chcemy tylko Data Engineer (a nie Scientist/Architect/Analyst itp.)
+# Tytul musi zawierac ROLE_REQUIRED_KEYWORD ORAZ nie moze zawierac slow z listy wykluczen.
+ROLE_REQUIRED_KEYWORD = os.getenv("ROLE_REQUIRED_KEYWORD", "engineer").strip().lower()
+EXCLUDED_ROLE_WORDS = [
+    w.strip().lower()
+    for w in os.getenv(
+        "EXCLUDED_ROLE_WORDS",
+        "scientist,architect,analyst,analityk,architekt,naukowiec,administrator"
+    ).split(",")
+    if w.strip()
+]
+
 
 def _parse_salary(salary_str: str) -> tuple:
     """Zwraca (min, max, currency). Obsługuje PLN/h, PLN/mies, USD."""
@@ -98,6 +110,13 @@ def _should_include(job: dict) -> tuple:
     for exact in EXCLUDED_EXACT:
         if exact in title_lower:
             return False, f"stanowisko lead ({exact})"
+
+    # Tylko rola Data Engineer
+    for w in EXCLUDED_ROLE_WORDS:
+        if w in title_lower:
+            return False, f"inna rola ({w})"
+    if ROLE_REQUIRED_KEYWORD and ROLE_REQUIRED_KEYWORD not in title_lower:
+        return False, f"tytul bez '{ROLE_REQUIRED_KEYWORD}'"
 
     if FILTER_LOCATION and not _location_ok(job):
         return False, f"lokalizacja ({job.get('location','?')})"
@@ -201,12 +220,12 @@ def run():
         eng = f" !! {job.get('english_level','')}" if job.get('english_level') else ""
         print(f"   [{job['score']}%] {job['title'][:40]} - {job['company']}{eng}")
 
-    success = send_digest(top_jobs)
-    if success:
-        mark_as_sent([job["id"] for job in top_jobs])
-        print(f"\nWyslano {len(top_jobs)} ofert.")
+    sent_ids = send_digest(top_jobs)
+    if sent_ids:
+        mark_as_sent(sent_ids)
+        print(f"\nWyslano {len(sent_ids)} z {len(top_jobs)} ofert.")
     else:
-        print("\nBlad wysylki.")
+        print("\nBlad wysylki - nic nie oznaczono jako wyslane (wroca w kolejnym digescie).")
 
 def dry_run():
     print("DRY RUN - scraping bez wysylki\n")
