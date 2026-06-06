@@ -40,6 +40,9 @@ ALLOWED_CITIES = {
     if c.strip()
 }
 
+# Delikatny nudge: oferty bez widelek nieco nizej (nie dyskryminujemy mocno).
+NO_SALARY_PENALTY = int(os.getenv("NO_SALARY_PENALTY", "5"))
+
 MIN_SCORE   = int(os.getenv("MIN_SCORE", "30"))
 MAX_OFFERS  = int(os.getenv("MAX_OFFERS_PER_DIGEST", "5"))
 MIN_SALARY_PLN = int(os.getenv("MIN_SALARY_B2B", "26000"))
@@ -152,6 +155,9 @@ def _dedup_and_score(all_jobs: list, save: bool = True, verbose: bool = False) -
                 continue
 
         job["score"] = score_job(job)
+        # Oferty bez podanych widelek: lekko nizej niz te z konkretna kwota.
+        if not job.get("salary"):
+            job["score"] = max(0, job["score"] - NO_SALARY_PENALTY)
         eng_level, eng_match = assess_english(
             job.get("languages"),
             job.get("title", ""), job.get("description", ""), job.get("detail_text", "")
